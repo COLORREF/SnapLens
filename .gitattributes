@@ -1,0 +1,8 @@
+# SVG 图标不计入语言统计
+*.svg linguist-vendored
+
+# 编译产物不计入语言统计（由 pyside6-rcc 自动生成）
+prscr/assets/assets_rc.py linguist-vendored
+
+# 文本文件统一 LF 换行
+* text=auto eol=lf
