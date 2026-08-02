@@ -1,6 +1,8 @@
-# PrScr 静态分析报告
+# SnapLens 静态分析报告
 
-> 分析时间：2026-07-27 | 分析范围：全部 31 个 `.py` 源文件 | 版本：0.1.0
+> 分析时间：2026-08-03 | 分析范围：全部 37 个 `.py` 源文件 + C++ 原生模块 | 版本：0.1.0
+
+本报告仅包含当前代码（重构后）中仍存在的问题。已修复或不再适用的问题已移除。
 
 ---
 
@@ -8,10 +10,7 @@
 
 | ID | 优先级 | 文件 | 行号 | 标题 | 详情 |
 |----|--------|------|------|------|------|
-| ~~B1~~ | 🟡 P1 | `prscr/ui/overlay.py` | 903-920 | ~~颜色标签背景色配置无效~~ ✅ 已修复 (2026-07-27) | 坐标和颜色标签各自使用对应的 `_coord_label_bg_color` / `_color_label_bg_color` 及对应 alpha 值 |
-| ~~B2~~ | 🟢 P2 | `prscr/ai/deepseek.py` | — | ~~冗余异常包装~~ ✅ 已修复 (2026-07-27) | deepseek.py 已简化为 OpenCompatibleTranslator 别名，不再包含异常处理逻辑 |
-| ~~B3~~ | 🟢 P2 | `prscr/ui/translate_window.py` | 206-211 | ~~重新翻译时未终止旧线程~~ ✅ 已修复 (2026-07-27) | 改为同步互斥方案：`_set_loading(True)` 时禁用 `_lang_combo`，翻译中无法切换语言或点击重译，从源头杜绝并发线程。比 abort 机制更简洁，零 API 额度浪费 |
-| ~~B4~~ | 🟢 P2 | `prscr/ui/overlay.py` | 672, 812 | ~~_info_label_texts() 同帧调用两次~~ ✅ 已修复 (2026-07-27) | _MgFrame 新增 coord_text/color_text 字段缓存，_compute_label_targets() 存入 frame，_render_mg_labels() 直接读取不再二次调用
+| B1 | 🔴 P0 | `snaplens/core/settings.py` | 313-319 | `save()` 中 `os.makedirs` 失败时 `NameError` | `path = os.path.join(...)` 在第 314 行定义，若第 313 行 `os.makedirs` 抛 OSError，第 319 行 `_log.error(..., path, e)` 引用未定义变量，二次崩溃。 |
 
 ---
 
@@ -19,10 +18,7 @@
 
 | ID | 优先级 | 文件 | 行号 | 标题 | 详情 |
 |----|--------|------|------|------|------|
-| ~~P1~~ | — | `prscr/ui/overlay.py` | 936-940 | ~~每帧 toImage() 全图转换~~ ❌ 无效 (2026-07-27) | 实测三方案对比：全图 toImage() avg=0.006~0.011ms/frame，快于 1px-crop (0.016ms) 和放大镜区域 (0.027ms)。在 60fps 预算中占比 <0.1%，不构成性能瓶颈。B4（同帧二次调用）修复后已无实际影响 |
-| ~~P2~~ | 🟡 P1 | `prscr/ui/settings_dialog.py` | — | ~~重置/序列化逻辑手动逐字段~~ ✅ 已修复 (2026-07-27) | 构建 `_reset_map` 映射表（key→widget+setter+tab），`as_dict()` 自动从 SETTING_DEFS 生成，`_on_reset_all()` 和 7 个 `_reset_*_tab()` 统一委托 `_reset_keys()`。从 ~258 行减至 ~140 行
-| ~~P3~~ | 🟢 P2 | `prscr/ui/overlay.py` | 158-192 | ~~属性提取逐行重复 35 次~~ ✅ 已修复 (2026-07-27) | 删除所有 `if s else default` 死代码（settings 永不为 None），35 行简化为直接 `s.xxx` 访问
-| P4 | 🟢 P2 | `prscr/ui/overlay.py` | 479-557 | `_animate_labels()` 复杂度高 | ❌ 不修复 (2026-07-27) — 方法处理的是本身就很复杂的状态机（2种触发器×2种元素×动画中断×首帧初始化），代码文档清晰、近期已重构修复过 3 个 bug，拆分不会降低认知复杂度 |
+| P1 | 🟢 P2 | `snaplens/ui/overlay.py` | 479-557 | `_animate_labels()` 复杂度高 | 不修复 — 状态机本身复杂（2 种触发器 × 2 种元素 × 动画中断），代码文档清晰，拆分不会降低认知复杂度。 |
 
 ---
 
@@ -30,14 +26,14 @@
 
 | ID | 优先级 | 文件 | 行号 | 标题 | 详情 |
 |----|--------|------|------|------|------|
-| ~~Q1~~ | 🟡 P1 | `prscr/ai/__init__.py` | 33-35 | ~~未知 provider 静默回退~~ ✅ 已修复 (2026-07-27) | 通过 PROVIDER_CONFIGS 注册表 + `_one_of` 验证器，未知 provider 现在抛出 `ValueError` |
-| ~~Q2~~ | 🟢 P2 | `prscr/ui/ocr_window.py` | 全局 | ~~文本控件不一致~~ ✅ 已修复 (2026-07-27) | OCR 窗口 `QTextEdit` → `QPlainTextEdit`，与翻译窗口统一
-| ~~Q3~~ | 🟢 P2 | `prscr/ui/translate_window.py` | 176-183 | ~~硬编码暗色主题样式~~ ✅ 已修复 (2026-07-27) | 移除 _make_text_panel() QSS、QFont、状态标签 setStyleSheet，全面使用原生 Qt 渲染 |
-| ~~Q4~~ | 🟢 P2 | `prscr/ui/ocr_window.py` | 84-92 | ~~同上，硬编码暗色主题~~ ✅ 已修复 (2026-07-27) | 同上，移除 QSS、QFont、状态标签颜色
-| ~~Q5~~ | 🟢 P2 | `prscr/core/temp_cleanup.py` | 32-34 | ~~仅清理文件不清理子目录~~ ✅ 已修复 (2026-07-27) | 新增 `shutil.rmtree` 处理子目录，文件用 `os.unlink`，覆盖所有条目类型
-| ~~Q6~~ | 🟢 P2 | `prscr/app.py` | 122-123 | ~~OSError 静默吞异常~~ ✅ 已修复 (2026-07-27) | `except OSError: pass` → `except OSError as e: _log.error(...)` |
-| ~~Q7~~ | 🟢 P2 | `prscr/ui/snip.py` | 62-65 | ~~grabKeyboard() 失败静默~~ ✅ 已修复 (2026-07-27) | `pass` → `_log.warning(...)` |
-| ~~Q8~~ | 🟢 P2 | `prscr/ui/snip.py` | 111-113 | ~~releaseKeyboard() 失败静默~~ ✅ 已修复 (2026-07-27) | 同上 |
+| Q1 | 🟡 P1 | `snaplens/core/settings.py` | 54-60 | `_one_of()` 静默回退不记日志 | 当配置值不在允许列表时静默回退到 `choices[0]`，用户不知道该值被忽略。影响 `ai_provider`、`save_format`、`color_format`、`app_mode` 等关键项。 |
+| Q2 | 🟡 P1 | `snaplens/ui/main_window.py` | 369-379 | `_build_full_prompt()` 中 `str.format()` 无容错 | 连到 `textChanged` 信号，用户每输入一个字符都会调用。若提示词模板含意外 `{` 或 `}`，直接 KeyError 崩溃。 |
+| Q3 | 🟡 P1 | `snaplens/core/api_client.py` | 91 | `call_chat_stream()` 的 `cancel_flag` 参数未传递 | 签名接受 `cancel_flag`，但调用 `_native_call_chat_stream()` 时未传递。底层 `ai/native_binding.py` 自建了一个，上层参数成为死代码。 |
+| Q4 | 🟢 P2 | `snaplens/core/settings.py` | 262 | `_EXTRA_FIELDS` 死代码 | `_EXTRA_FIELDS` 定义了 `{"save_dir", "temp_dir", "settings_version"}`，但整个项目从未引用。 |
+| Q5 | 🟢 P2 | `snaplens/ai/deepseek.py` | 9 | `DeepSeekTranslator` 别名无人引用 | 所有翻译通过 `ai/__init__.py` 工厂创建，该模块无任何 import 方。 |
+| Q6 | 🟢 P2 | `snaplens/ai/openai_compat.py` | 1-9 | 模块文档过时 | 仍声称使用 "openai SDK"，实际已切换到 C++ DLL + ctypes。 |
+| Q7 | 🟢 P2 | `snaplens/core/settings.py` | 16 | 未使用的 import `field` | `from dataclasses import dataclass, field` — `field` 未被使用。 |
+| Q8 | 🟢 P3 | `snaplens/ui/settings_dialog.py` | 96 | import 位置不符合 PEP 8 | `from ..core.ocr import find_tessdata_dir` 夹在常量和类定义之间，应在文件顶部。 |
 
 ---
 
@@ -45,36 +41,44 @@
 
 | ID | 优先级 | 文件/位置 | 标题 | 详情 |
 |----|--------|----------|------|------|
-| ~~R1~~ | 🟡 P1 | `prscr/core/capture.py` | 26-29 | ~~混合 DPI 多屏坐标偏差~~ ✅ 已修复 (2026-07-27) | `physical_origin` 改为累加左侧所有屏的物理宽高，而非简单 `geometry.x() × 本屏 dpr` |
-| R2 | 🟡 P1 | `prscr/platform/base.py` | 76-84 | `NullCursorProvider` 非整数 DPR 精度损失 | 用 `QCursor.pos()` × `DPR` 再用 `round()` 取整，在 1.5x DPR 时产生 ±1 像素误差。此仅影响 macOS/Linux（当前不适用），但若未来接入需注意 |
-| R3 | 🟢 P2 | `prscr/ui/settings_dialog.py` | 91-93 | Tesseract 语言包下载无校验 | 通过 jsdelivr CDN 下载 `traineddata` 文件，无 SHA256/hash 校验，存在供应链风险 |
-| R4 | 🟢 P2 | `prscr/ui/translate_window.py` + `ocr_window.py` | 全局 | 临时文件无限增长 | 仅在 `cleanup_on_window_close=True` 时清理临时图片文件。若用户关闭该选项，`temp/` 目录随每次翻译/OCR 操作增长，无限积累 |
-| R5 | 🟢 P2 | `prscr/core/ocr.py` | 88-92 | OCR 语言回退静默 | `extract_text()` 在指定语言包缺失时静默回退为英文（`lang="eng"`），不通知用户部分语言未生效 |
-| R6 | 🟢 P2 | `prscr/app.py` | 181-191 | 热键注册失败 UI 无持续标识 | `_apply_hotkey()` 仅在失败时发一次通知，托盘菜单文字仍显示失效的快捷键，无持续视觉提示（如红色/禁用标记） |
-| R7 | 🟢 P2 | `prscr/core/settings.py` | 57-58 | 未知值静默回退首位 | `_one_of()` 验证器在值不在选项中时回退到 `choices[0]`，不记录日志。用户可能不知道某个含拼写错误的值已被替换为默认值 |
-| R8 | 🟢 P2 | `prscr/ui/main_window.py` | 359 | `str.format()` 潜在 KeyError | `_build_full_prompt()` 对 `prompt_template.format(source_text=...)`，若用户手动修改提示词模板删除了 `{source_text}` 占位符以外的 `{` 字符，可能触发 KeyError 导致 UI 异常 |
+| R1 | 🟡 P1 | `snaplens/platform/base.py` | 76-84 | `NullCursorProvider` 非整数 DPR 精度损失 | `QCursor.pos()` × `DPR` 再用 `round()` 取整，在 1.5x DPR 时产生 ±1 px 误差。仅影响 macOS/Linux（当前不适用）。 |
+| R2 | 🟢 P2 | `snaplens/core/ocr.py` | 88-93 | OCR 语言包缺失时静默回退 eng | `extract_text()` 在指定语言包缺失时静默回退英文，无日志通知用户部分语言未生效。 |
+| R3 | 🟢 P2 | `snaplens/ui/settings_dialog.py` | 299-303 | Tesseract 语言包下载无 hash 校验 | CDN (jsdelivr) 下载 `traineddata` 文件，无 SHA256 校验，存在供应链风险。 |
+| R4 | 🟢 P2 | `snaplens/ui/translate_window.py` + `ocr_window.py` | 全局 | 临时文件积累风险 | 长期会话中重复翻译/OCR 会累计临时文件；程序崩溃时不会清理；删除失败静默吞异常。 |
+| R5 | 🟢 P2 | `snaplens/app.py` | 221-232 | 热键注册失败无持续 UI 标识 | 仅发一次托盘通知（3 秒消失），托盘菜单仍显示失效的快捷键，无持续标记。 |
+| R6 | 🟢 P2 | `snaplens/core/temp_cleanup.py` | 40-43 | OSError 静默吞异常 | 内外两层 `except OSError: pass`，清理失败无任何日志。 |
+| R7 | 🟢 P2 | `snaplens/core/temp_cleanup.py` | 15-50 | 无差别删除 temp 目录所有内容 | 若用户误将 `temp_dir` 设为重要目录，会造成不可逆数据丢失。 |
+| R8 | 🟢 P2 | `snaplens/ai/native_binding.py` | 多处 | `print()` 调试输出未清理 | 约 15 处 `print("[snap_ai PY] ...")` 在正式版中不应出现，应由 logging.debug 替代。 |
+| R9 | 🟢 P2 | `requirements.txt` | 4 | `openai>=1.0` 依赖已无用 | 项目已全面切换至 C++ DLL（ctypes 调用），openai SDK 不再被任何代码引用。 |
 
 ---
 
 ## 五、统计总览
 
-| 类别 | 🔴 P0 | 🟡 P1 | 🟢 P2 | 合计 |
-|------|-------|-------|-------|------|
-| Bug | 0 | 0 | 1 | **1** (已修复 3) |
-| 性能问题 | 0 | 0 | 3 | **3** (已关闭 1) |
-| 代码质量问题 | 0 | 0 | 7 | **7** (已修复 1) |
-| 潜在隐患 | 0 | 2 | 6 | **8** |
-| **合计** | **0** | **2** | **16** | **18** |
+| 类别 | 🔴 P0 | 🟡 P1 | 🟢 P2 | P3 | 合计 |
+|------|-------|-------|-------|-----|------|
+| Bug | 1 | 0 | 0 | 0 | **1** |
+| 性能问题 | 0 | 0 | 1 | 0 | **1** |
+| 代码质量问题 | 0 | 3 | 4 | 1   | **8** |
+| 潜在隐患 | 0 | 1 | 8 | 0   | **9** |
+| **合计** | **1** | **4** | **13** | **1** | **19** |
 
 ### 优先级定义
 
 | 标记 | 含义 |
 |------|------|
-| 🔴 P0 | 严重影响用户体验或功能（性能瓶颈、必崩溃） |
-| 🟡 P1 | 明显影响使用（功能 Bug、已知数据不一致、明显维护风险） |
-| 🟢 P2 | 改善项（代码整洁、一致性、边缘场景、潜在风险） |
+| 🔴 P0 | 崩溃 / 数据丢失 / 核心功能不可用 |
+| 🟡 P1 | 明显影响使用或存在数据不一致风险 |
+| 🟢 P2 | 改善项（代码整洁、潜在风险、边缘场景） |
+| P3 | 轻微（格式、文档、import 规范） |
 
-### 需立即处理的 P0 + 高优 P1 项
+### 建议修复顺序
 
-1. ~~P1 — `overlay.py` `toImage()` 性能~~ → 实测无效，已关闭
-2. ~~P2 — 重置逻辑数据驱动重构~~ → 已修复
+1. **B1 (P0)** — settings.py save() NameError：一行修复
+2. **Q1 (P1)** — `_one_of()` 加日志：一行修复
+3. **Q2 (P1)** — `str.format()` 加 try/except：防止输入崩溃
+4. **Q3 (P1)** — 移除或正确传递 `cancel_flag` 参数
+5. **R9 (P2)** — 移除 `openai` 依赖
+6. **R8 (P2)** — ai binding print → logging.debug
+7. **Q4 (P2)** — 删除 `_EXTRA_FIELDS` 死代码
+8. **R2-R7 (P2)** — 各潜在隐患按需修复

@@ -9,7 +9,6 @@
 不区分服务商，仅通过 api_base 和 model 参数区分。
 """
 from .base import AITranslator
-from ..core.api_client import call_chat, call_chat_stream
 from ..core.ocr import extract_text as ocr_extract_text
 from ..core.ocr import TESSERACT_DOWNLOAD_URL
 
@@ -96,6 +95,10 @@ class OpenAICompatibleTranslator(AITranslator):
 
     def _call_api(self, prompt: str) -> tuple[str, str]:
         """调用 AI API（复用共享客户端），根据 stream_thinking 选择模式。"""
+        # 惰性导入，避免 core/api_client → ai/native_binding → ai/__init__
+        # → openai_compat → core/api_client 的循环依赖
+        from ..core.api_client import call_chat, call_chat_stream
+
         common = dict(
             api_key=self._api_key,
             api_base=self._api_base,
