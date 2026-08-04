@@ -1,5 +1,4 @@
 """应用控制器：串联主窗口、托盘、全局热键、截图会话与设置。"""
-import logging
 import os
 from datetime import datetime
 
@@ -7,7 +6,7 @@ from PySide6.QtCore import QObject, QCoreApplication
 from PySide6.QtGui import QGuiApplication, QKeySequence, QPixmap
 
 from .core.settings import Settings
-from .core.temp_cleanup import cleanup_temp_dir
+from .log import log_error, log_info, set_enabled_levels
 from .notify import NotifyManager
 from .platform import create_hotkey_provider
 from .ui.main_window import MainWindow
@@ -18,8 +17,6 @@ from .ui.snip import SnipSession
 from .ui.translate_window import TranslateWindow
 from .ui.ocr_window import OcrWindow
 from .ui.tray import TrayIcon
-
-_log = logging.getLogger(__name__)
 
 
 class AppController(QObject):
@@ -82,9 +79,15 @@ class AppController(QObject):
         # 绑定通知管理器的托盘通道
         self.notify_manager.set_tray(self.tray)
 
-        # 根据设置决定是否在启动时清理临时文件
-        if self.settings.cleanup_on_startup:
-            cleanup_temp_dir(self.settings.temp_dir)
+        # 应用 OCR 路径设置（自定义 SDK bin / tessdata 目录）
+        try:
+            from .ocr import apply_settings
+            apply_settings(
+                sdk_bin_dir=self.settings.ocr_sdk_bin_dir,
+                tessdata_dir=self.settings.ocr_tessdata_dir,
+            )
+        except Exception:
+            pass  # OCR 模块可能尚未编译，不阻塞启动
 
         # 翻译主窗口（两种模式都创建，区别在于是否显示）
         self.main_window = MainWindow(
@@ -107,6 +110,7 @@ class AppController(QObject):
         self.hotkey = create_hotkey_provider(self)
         self.hotkey.triggered.connect(self.start_snip)
         self._apply_hotkey()
+        self._apply_log_levels()
 
     # ------------------------------------------------------------ 截图流程
     def start_snip(self):
@@ -156,7 +160,7 @@ class AppController(QObject):
                 )
                 return
         except OSError as e:
-            _log.error("保存截图失败: %s", e)
+            log_error(f"保存截图失败: {e}")
         self.notify_manager.notify(
             "save_fail", "SnapLens 截图",
             "保存失败，请检查保存目录是否可写。",
@@ -214,6 +218,16 @@ class AppController(QObject):
         self.settings.update_from_dict(dialog.as_dict())
         self.settings.save()
         self._apply_hotkey()
+        self._apply_log_levels()
+        # 同步 OCR 路径设置
+        try:
+            from .ocr import apply_settings
+            apply_settings(
+                sdk_bin_dir=self.settings.ocr_sdk_bin_dir,
+                tessdata_dir=self.settings.ocr_tessdata_dir,
+            )
+        except Exception:
+            pass
         # 如果用户在设置中更改了应用模式，立即应用
         if self.settings.app_mode != old_mode:
             self.switch_mode(self.settings.app_mode)
@@ -230,6 +244,14 @@ class AppController(QObject):
                 f"快捷键 {native} 注册失败，可能被其它程序占用，"
                 f"请在设置中更换。",
             )
+
+    def _apply_log_levels(self):
+        set_enabled_levels(
+            debug=self.settings.log_debug_enabled,
+            info=self.settings.log_info_enabled,
+            warning=self.settings.log_warning_enabled,
+            error=self.settings.log_error_enabled,
+        )
 
     # ------------------------------------------------------------ 模式切换
     def _on_mode_switch(self):
@@ -280,7 +302,7 @@ class AppController(QObject):
         # 同步托盘菜单文字
         self.tray.set_mode_text(mode)
 
-        _log.info("应用模式切换为: %s", mode)
+        log_info(f"应用模式切换为: {mode}")
 
     # ------------------------------------------------------------ 退出
     def quit(self):

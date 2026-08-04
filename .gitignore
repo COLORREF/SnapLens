@@ -44,3 +44,6 @@ native/**/cmake-build-*/
 *.exp
 *.lib
 *.pdb
+
+# AI
+.workbuddy/

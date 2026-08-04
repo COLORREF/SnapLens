@@ -23,28 +23,8 @@
 #include <functional>
 #include <string>
 
-// ---- 日志工具（调试用，后续清理）----
-#include <cstdio>
-#include <cstdarg>
-
-namespace snap_ai_log {
-
-inline void log_impl(const char* file, int line, const char* fmt, ...) {
-    const char* slash = file;
-    if (const char* f = strrchr(file, '\\')) slash = f + 1;
-    if (const char* f = strrchr(file, '/'))  slash = f + 1;
-
-    fprintf(stderr, "[snap_ai %s:%d] ", slash, line);
-    va_list ap;
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    va_end(ap);
-    fputc('\n', stderr);
-}
-
-}  // namespace snap_ai_log
-
-#define SNAP_AI_LOG(...) ::snap_ai_log::log_impl(__FILE__, __LINE__, __VA_ARGS__)
+// ---- 统一日志 ----
+#include <snaplens_log.h>
 
 // ---- 流式回调类型 ----
 using StreamChunkCallback = std::function<void(

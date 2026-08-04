@@ -10,6 +10,7 @@
   Qt 信号槽机制自动将事件投递到主线程，符合线程安全约定
 """
 import ctypes
+import os
 import sys
 from pathlib import Path
 
@@ -90,6 +91,18 @@ CancelCallbackC = ctypes.CFUNCTYPE(None,         # void 返回
 # 注意：变量名与函数名不可相同！Python 的 def 会覆盖同名模块级变量
 _dll_cache: ctypes.CDLL | None = None
 
+_native_bin_added = False
+
+def _add_native_bin_to_search_path() -> None:
+    global _native_bin_added
+    if _native_bin_added:
+        return
+    project_root = Path(__file__).parent.parent.parent
+    native_bin = project_root / "native" / "bin"
+    if native_bin.is_dir():
+        os.add_dll_directory(str(native_bin))
+    _native_bin_added = True
+
 def _load_dll() -> ctypes.CDLL:
     """加载 snaplens_platform.dll，失败抛 OSError。
 
@@ -98,6 +111,8 @@ def _load_dll() -> ctypes.CDLL:
     2. native/build/*/bin/       （CLion cmake-build-* 目录）
     3. 可执行文件同级             （PyInstaller 打包）
     """
+    _add_native_bin_to_search_path()
+
     # __file__ = snaplens/platform/native_binding.py → 项目根目录
     project_root = Path(__file__).parent.parent.parent
     candidates = [

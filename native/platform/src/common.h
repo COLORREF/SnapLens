@@ -13,6 +13,9 @@
 #include <windows.h>
 #include <dwmapi.h>
 
+// 统一日志（通过 snaplens_log.dll C ABI）
+#include <snaplens_log.h>
+
 // C++17 标准库
 #include <atomic>
 #include <thread>

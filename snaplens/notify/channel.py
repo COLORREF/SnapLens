@@ -51,14 +51,21 @@ def _level_to_msgbox_icon(level: str) -> QMessageBox.Icon:
 class LogChannel:
     """控制台日志通道。
 
-    所有通知统一以 "[Notify][级别]" 前缀输出到 snaplens.notify logger。
+    通过 C++ log.dll 输出统一格式日志。
     """
 
     @staticmethod
     def send(level: str, title: str, message: str) -> None:
-        log_level = _level_to_log(level)
-        _NOTIFY_LOGGER.log(log_level, "[Notify][%s] %s: %s",
-                           level.upper(), title, message)
+        try:
+            from ..log import LOG_LEVEL_INFO, LOG_LEVEL_WARNING, LOG_LEVEL_ERROR, log as _cpp_log
+            _level_map = {
+                NotifyLevel.INFO: LOG_LEVEL_INFO,
+                NotifyLevel.WARNING: LOG_LEVEL_WARNING,
+                NotifyLevel.ERROR: LOG_LEVEL_ERROR,
+            }
+            _cpp_log(_level_map.get(level, LOG_LEVEL_INFO), f"[Notify] {title}: {message}")
+        except (ImportError, OSError):
+            pass
 
 
 # =====================================================================

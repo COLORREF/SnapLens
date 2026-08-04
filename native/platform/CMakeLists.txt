@@ -17,6 +17,7 @@ target_compile_definitions(snaplens_platform PRIVATE SNAP_PLATFORM_EXPORTS)
 # 系统库
 if(WIN32)
     target_link_libraries(snaplens_platform PRIVATE
+        snaplens_log
         user32      # RegisterHotKey, EnumWindows, GetCursorPos, ClipCursor
         kernel32    # GetCurrentProcessId
         dwmapi      # DwmGetWindowAttribute

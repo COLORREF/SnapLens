@@ -1,23 +1,22 @@
 """OpenAI 兼容翻译器。
 
-通过 openai SDK 调用任意 OpenAI 兼容接口
+通过 C++ DLL (Qt Network) 调用任意 OpenAI 兼容接口
 （DeepSeek / OpenAI / 通义千问等），均采用 OCR + API 两步策略：
 
-1. pytesseract 从图片中提取原始文字
+1. snaplens_ocr.dll（Tesseract 5.5 C API）从图片中提取原始文字
 2. 将提取的文字发给 AI 翻译为目标语言
 
 不区分服务商，仅通过 api_base 和 model 参数区分。
 """
 from .base import AITranslator
-from ..core.ocr import extract_text as ocr_extract_text
-from ..core.ocr import TESSERACT_DOWNLOAD_URL
+from ..core.ocr import extract_text, extract_text_from_pixmap
 
 
 class OpenAICompatibleTranslator(AITranslator):
-    """基于 openai SDK 的图片文字翻译器，兼容所有 OpenAI 接口的服务商。
+    """基于 C++ DLL 的图片文字翻译器，兼容所有 OpenAI 接口的服务商。
 
     Pipeline:
-    1. pytesseract 从图片中提取原始文字
+    1. snaplens_ocr.dll 从图片中提取原始文字
     2. 将提取的文字发给 AI API 翻译为目标语言
 
     支持流式和非流式两种模式：
@@ -54,26 +53,36 @@ class OpenAICompatibleTranslator(AITranslator):
         self._on_thinking = on_thinking
 
     def translate(self,
-                  image_path: str,
-                  target_lang: str,
-                  prompt_template: str) -> dict:
+                  image_path: str = "",
+                  target_lang: str = "",
+                  prompt_template: str = "",
+                  pixmap=None) -> dict:
         """翻译图片中的文字为目标语言。
 
-        详见基类 AITranslator.translate 文档。
+        Args:
+            image_path: 本地图片文件路径（兜底路径，pixmap 存在时忽略）。
+            target_lang: 目标语言，如 "简体中文"。
+            prompt_template: 包含 {target_lang} 占位符的提示词模板。
+            pixmap: QPixmap 截图（优先使用，像素直传 DLL）。
+
+        Returns:
+            dict: 详见基类 AITranslator.translate 文档。
         """
         if not self._api_key:
             raise ValueError("API Key 未设置，请在设置中配置")
 
         # 第一步：OCR 提取文字
         try:
-            source_text = ocr_extract_text(image_path, self._ocr_langs)
-        except ImportError:
+            if pixmap is not None:
+                source_text = extract_text_from_pixmap(pixmap, self._ocr_langs)
+            elif image_path:
+                source_text = extract_text(image_path, self._ocr_langs)
+            else:
+                raise ValueError("必须提供 pixmap 或 image_path 之一")
+        except ImportError as e:
             raise RuntimeError(
-                "OCR 引擎未安装，请运行：\n"
-                "pip install pytesseract Pillow\n\n"
-                "并安装 Tesseract OCR（勾选中文语言包）：\n"
-                f"{TESSERACT_DOWNLOAD_URL}\n\n"
-                "打包部署时可将便携版放入 exe 同级的 tesseract/ 目录自动识别。"
+                f"OCR DLL 不可用：{e}\n\n"
+                "请确认已编译 snaplens_ocr.dll（详见 docs/native-build-notes.md）"
             )
         except RuntimeError as e:
             raise RuntimeError(f"文字提取失败：{e}")

@@ -14,6 +14,8 @@ import os
 import sys
 from pathlib import Path
 
+from ..log import log_info, log_warning, log_error
+
 # 错误码（与 ai_client.h 中 SNAP_AI_* 一致）
 SNAP_AI_OK = 0
 SNAP_AI_ERR_NETWORK = -1
@@ -71,7 +73,7 @@ def _ensure_qt_dll_dir() -> None:
     qt_bin = _find_qt_bin_dir()
     if qt_bin:
         os.add_dll_directory(str(qt_bin))
-        print(f"[snap_ai PY] Qt DLL 目录: {qt_bin}")
+        log_info(f"[snap_ai PY] Qt DLL 目录: {qt_bin}")
     _qt_bin_added = True
 
 
@@ -99,13 +101,13 @@ def _load_dll() -> ctypes.CDLL:
     for path in candidates:
         if path.is_file():
             try:
-                print(f"[snap_ai PY] 加载 DLL: {path}")
+                log_info(f"[snap_ai PY] 加载 DLL: {path}")
                 dll = ctypes.CDLL(str(path))
                 _setup_signatures(dll)
-                print(f"[snap_ai PY] DLL 加载成功，路径: {path}")
+                log_info(f"[snap_ai PY] DLL 加载成功，路径: {path}")
                 return dll
             except OSError as e:
-                print(f"[snap_ai PY] 加载失败 {path}: {e}")
+                log_error(f"[snap_ai PY] 加载失败 {path}: {e}")
                 raise OSError(f"加载 {path} 失败：{e}") from e
 
     searched = "\n  ".join(str(p) for p in candidates)
@@ -236,8 +238,8 @@ def call_chat(
     thinking_buf = ctypes.create_unicode_buffer(32768)
     error_buf = ctypes.create_unicode_buffer(4096)
 
-    print(f"[snap_ai PY] call_chat: base={api_base} model={model} "
-          f"msgs={msg_count} json_bytes={msg_bytes} timeout={timeout}")
+    log_info(f"[snap_ai PY] call_chat: base={api_base} model={model} "
+             f"msgs={msg_count} json_bytes={msg_bytes} timeout={timeout}")
 
     ret = _get_dll().snap_ai_chat_create(
         api_key,
@@ -259,8 +261,8 @@ def call_chat(
     if ret == SNAP_AI_OK:
         content = content_buf.value
         thinking = thinking_buf.value
-        print(f"[snap_ai PY] call_chat: OK ret={ret} "
-              f"content_len={len(content)} thinking_len={len(thinking)}")
+        log_info(f"[snap_ai PY] call_chat: OK ret={ret} "
+                 f"content_len={len(content)} thinking_len={len(thinking)}")
         return {
             "content": content,
             "thinking": thinking,
@@ -268,7 +270,7 @@ def call_chat(
 
     # 错误映射
     error_msg = error_buf.value or "Unknown error"
-    print(f"[snap_ai PY] call_chat: FAIL ret={ret} error={error_msg}")
+    log_error(f"[snap_ai PY] call_chat: FAIL ret={ret} error={error_msg}")
     _raise_from_error(ret, error_msg)
 
 
@@ -332,8 +334,8 @@ def call_chat_stream(
     # 保持回调引用，防止被 GC 导致崩溃
     cb_ref = StreamCallbackC(_on_chunk)
 
-    print(f"[snap_ai PY] call_chat_stream: base={api_base} model={model} "
-          f"msgs={msg_count} json_bytes={msg_bytes} timeout={timeout}")
+    log_info(f"[snap_ai PY] call_chat_stream: base={api_base} model={model} "
+             f"msgs={msg_count} json_bytes={msg_bytes} timeout={timeout}")
 
     ret = _get_dll().snap_ai_chat_create_stream(
         api_key,
@@ -354,14 +356,14 @@ def call_chat_stream(
 
     if final_error is not None:
         code, msg = final_error
-        print(f"[snap_ai PY] call_chat_stream: FAIL ret={ret} "
-              f"chunks={chunk_count} error_code={code} error={msg}")
+        log_error(f"[snap_ai PY] call_chat_stream: FAIL ret={ret} "
+                  f"chunks={chunk_count} error_code={code} error={msg}")
         _raise_from_error(code, msg)
 
     content = "".join(content_parts).strip()
     thinking = "".join(thinking_parts)
-    print(f"[snap_ai PY] call_chat_stream: OK ret={ret} "
-          f"chunks={chunk_count} content_len={len(content)} thinking_len={len(thinking)}")
+    log_info(f"[snap_ai PY] call_chat_stream: OK ret={ret} "
+             f"chunks={chunk_count} content_len={len(content)} thinking_len={len(thinking)}")
     return {
         "content": content,
         "thinking": thinking,
@@ -380,7 +382,7 @@ def list_models(api_key: str, api_base: str, timeout: int = 10) -> list[str]:
     models_buf = ctypes.create_unicode_buffer(65536)
     error_buf = ctypes.create_unicode_buffer(4096)
 
-    print(f"[snap_ai PY] list_models: base={api_base} timeout={timeout}")
+    log_info(f"[snap_ai PY] list_models: base={api_base} timeout={timeout}")
 
     ret = _get_dll().snap_ai_list_models(
         api_key,
@@ -394,15 +396,15 @@ def list_models(api_key: str, api_base: str, timeout: int = 10) -> list[str]:
         models_json = models_buf.value
         try:
             models = json.loads(models_json)
-            print(f"[snap_ai PY] list_models: OK ret={ret} count={len(models)}")
+            log_info(f"[snap_ai PY] list_models: OK ret={ret} count={len(models)}")
             return models
         except json.JSONDecodeError:
-            print(f"[snap_ai PY] list_models: OK but JSON decode failed, "
-                  f"raw_len={len(models_json)}")
+            log_warning(f"[snap_ai PY] list_models: OK but JSON decode failed, "
+                        f"raw_len={len(models_json)}")
             return []
 
     error_msg = error_buf.value or "Unknown error"
-    print(f"[snap_ai PY] list_models: FAIL ret={ret} error={error_msg}")
+    log_error(f"[snap_ai PY] list_models: FAIL ret={ret} error={error_msg}")
     _raise_from_error(ret, error_msg)
 
 
@@ -417,7 +419,7 @@ def _raise_from_error(code: int, msg: str):
         SNAP_AI_ERR_PARAM: "ERR_PARAM",
     }
     err_name = error_names.get(code, f"UNKNOWN({code})")
-    print(f"[snap_ai PY] _raise_from_error: code={code} ({err_name}) msg={msg}")
+    log_warning(f"[snap_ai PY] _raise_from_error: code={code} ({err_name}) msg={msg}")
 
     if code == SNAP_AI_ERR_NETWORK:
         raise ConnectionError(msg)

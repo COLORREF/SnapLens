@@ -5,9 +5,6 @@
   左侧：可缩放/拖动的截图预览
   右侧：OCR 识别的文字内容
 """
-import os
-import tempfile
-
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QGuiApplication, QPixmap
 from PySide6.QtWidgets import (QHBoxLayout, QLabel,
@@ -15,7 +12,6 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel,
                                QVBoxLayout, QWidget)
 
 from ..core.settings import Settings
-from ..core.temp_cleanup import cleanup_temp_dir
 from .ocr_service import OcrService
 from .zoomable_image import ZoomableImageView
 
@@ -93,15 +89,8 @@ class OcrWindow(QWidget):
         root.addWidget(self._status_label)
 
     def _start_ocr(self):
-        tmp_dir = self._settings.temp_dir
-        os.makedirs(tmp_dir, exist_ok=True)
-        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False, dir=tmp_dir)
-        tmp.close()
-        self._tmp_path = tmp.name
-        self._pixmap.save(self._tmp_path, "PNG")
-
         self._service = OcrService(
-            image_path=self._tmp_path,
+            pixmap=self._pixmap,
             ocr_langs=self._settings.ai_ocr_langs,
         )
         self._service.finished.connect(self._on_result)
@@ -139,13 +128,5 @@ class OcrWindow(QWidget):
             from PySide6.QtWidgets import QApplication
             self._service.setParent(QApplication.instance())
 
-        # 仅在用户启用清理策略时才清理临时文件
-        if self._settings.cleanup_on_window_close:
-            try:
-                if hasattr(self, "_tmp_path") and os.path.exists(self._tmp_path):
-                    os.unlink(self._tmp_path)
-            except OSError:
-                pass
-            cleanup_temp_dir(self._settings.temp_dir)
         self.closed.emit()
         super().closeEvent(event)

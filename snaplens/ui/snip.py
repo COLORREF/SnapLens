@@ -6,15 +6,13 @@
 3. 用户在某个覆盖层完成选区 -> 点击工具条按钮；
 4. 会话裁剪图像、关闭所有覆盖层，再执行 保存/钉图/复制 回调。
 """
-import logging
-
 from PySide6.QtCore import QObject, QRect, Signal
 
 from ..core.capture import CapturedDesktop
+from ..log import log_warning
 from ..platform import create_cancel_provider, create_clip_cursor_provider, \
     create_window_provider
 
-_log = logging.getLogger(__name__)
 from .overlay import SnipOverlay
 
 
@@ -70,7 +68,7 @@ class SnipSession(QObject):
         try:
             self._overlays[0].grabKeyboard()
         except Exception as e:
-            _log.warning("grabKeyboard() 失败: %s", e)
+            log_warning(f"grabKeyboard() 失败: {e}")
         return True
 
     # ------------------------------------------------------------ 覆盖层信号
@@ -132,7 +130,7 @@ class SnipSession(QObject):
             try:
                 overlay.releaseKeyboard()
             except Exception as e:
-                _log.warning("releaseKeyboard() 失败: %s", e)
+                log_warning(f"releaseKeyboard() 失败: {e}")
             overlay.close()
         self._overlays.clear()
         self.finished.emit()

@@ -5,9 +5,6 @@
   左侧：可缩放/拖动的截图预览（ZoomableImageView）
   右侧：标签页切换 —— 翻译文本 | OCR 原文 | AI 思考
 """
-import os
-import tempfile
-
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QGuiApplication, QPixmap
 from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel,
@@ -15,7 +12,6 @@ from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel,
                                QTabWidget, QVBoxLayout, QWidget)
 
 from ..core.settings import Settings
-from ..core.temp_cleanup import cleanup_temp_dir
 from .translate_service import TranslateService
 from .zoomable_image import ZoomableImageView
 
@@ -60,7 +56,6 @@ class TranslateWindow(QWidget):
         self._auto_translate = auto_translate
         self._service: TranslateService | None = None
         self._notify_manager = notify_manager
-        self._tmp_path: str | None = None   # 临时图片路径，翻译开始时创建
 
         self.setWindowTitle("AI 翻译")
         self.resize(1100, 640)
@@ -178,16 +173,6 @@ class TranslateWindow(QWidget):
     def _start_translation(self):
         """启动后台翻译线程。"""
         self._set_loading(True)
-
-        # 确保临时目录存在
-        tmp_dir = self._settings.temp_dir
-        os.makedirs(tmp_dir, exist_ok=True)
-
-        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False, dir=tmp_dir)
-        tmp.close()
-        self._tmp_path = tmp.name
-        self._pixmap.save(self._tmp_path, "PNG")
-
         self._launch_service(self._current_lang)
 
     def _launch_service(self, target_lang: str):
@@ -209,7 +194,7 @@ class TranslateWindow(QWidget):
                 pass  # 已被 deleteLater 清理，无需额外操作
 
         self._service = TranslateService(
-            image_path=self._tmp_path,
+            pixmap=self._pixmap,
             target_lang=target_lang,
             settings=self._settings,
         )
@@ -257,11 +242,6 @@ class TranslateWindow(QWidget):
     def _retranslate(self):
         new_lang = self._lang_combo.currentText().strip()
         if not new_lang:
-            return
-        # 首次点击"开始翻译"时 _tmp_path 尚未创建
-        if self._tmp_path is None:
-            self._current_lang = new_lang
-            self._start_translation()
             return
         self._launch_service(new_lang)
 
@@ -323,13 +303,5 @@ class TranslateWindow(QWidget):
                 # C++ 对象已被 deleteLater 清理，Python 包装器尚存但无效
                 pass
 
-        # 仅在用户启用清理策略时才清理临时文件
-        if self._settings.cleanup_on_window_close:
-            try:
-                if hasattr(self, "_tmp_path") and os.path.exists(self._tmp_path):
-                    os.unlink(self._tmp_path)
-            except OSError:
-                pass
-            cleanup_temp_dir(self._settings.temp_dir)
         self.closed.emit()
         super().closeEvent(event)

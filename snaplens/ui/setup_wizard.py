@@ -300,40 +300,45 @@ class _OcrPage(QWizardPage):
 
         layout = QVBoxLayout(self)
 
-        # 检测 Tesseract
+        # 检测已有语言包
         tessdata = find_tessdata_dir()
-        if tessdata:
-            installed = self._scan_installed(tessdata)
-            layout.addWidget(QLabel("勾选需要识别的语言："))
-            self._checks: dict[str, QCheckBox] = {}
-            for code, name in self._LANG_MAP.items():
-                cb = QCheckBox(f"{name}  ({code})")
-                cb.setChecked(code in {"chi_sim", "eng"} and code in installed)
-                cb.setEnabled(code in installed)
-                layout.addWidget(cb)
-                self._checks[code] = cb
+        os.makedirs(tessdata, exist_ok=True)
+        installed = self._scan_installed(tessdata)
+        layout.addWidget(QLabel("勾选需要识别的语言："))
+        self._checks: dict[str, QCheckBox] = {}
+        for code, name in self._LANG_MAP.items():
+            cb = QCheckBox(f"{name}  ({code})")
+            cb.setChecked(code in {"chi_sim", "eng"} and code in installed)
+            cb.setEnabled(code in installed)
+            layout.addWidget(cb)
+            self._checks[code] = cb
 
-            # 显示未安装的语言
-            missing = [n for c, n in self._LANG_MAP.items() if c not in installed]
-            if missing:
-                missing_label = QLabel(
-                    f'未安装的语言包（可在"设置 > OCR 识别"中下载）：'
-                    f" {', '.join(missing)}"
-                )
-                missing_label.setWordWrap(True)
-                layout.addWidget(missing_label)
-        else:
-            layout.addWidget(QLabel(
-                "未检测到 Tesseract OCR 引擎。\n\n"
-                "OCR 和 AI 翻译功能将不可用。"
-                "请确保程序目录下有 tesseract 文件夹。"
-            ))
+        # 显示未安装的语言
+        missing = [n for c, n in self._LANG_MAP.items() if c not in installed]
+        if missing:
+            missing_label = QLabel(
+                f'未安装的语言包（可在"设置 > OCR 识别"中下载）：'
+                f" {', '.join(missing)}"
+            )
+            missing_label.setWordWrap(True)
+            layout.addWidget(missing_label)
+
+        if not installed:
+            hint = QLabel(
+                "语言包下载后自动保存到 sdk/tesseract/tessdata/。\n"
+                "OCR 引擎的 SDK DLL 目录和 tessdata 目录可在后续\n"
+                "\"设置 > OCR 识别\"中手动指定。"
+            )
+            hint.setWordWrap(True)
+            layout.addWidget(hint)
 
         layout.addStretch()
 
     @staticmethod
     def _scan_installed(tessdata_dir: str) -> set[str]:
         installed = set()
+        if not os.path.isdir(tessdata_dir):
+            return installed
         for f in os.listdir(tessdata_dir):
             if f.endswith(".traineddata"):
                 code = f[:-len(".traineddata")]

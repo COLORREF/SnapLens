@@ -10,9 +10,9 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QScrollArea, QSlider, QTabWidget, QTextEdit, QVBoxLayout,
                                QWidget)
 
-from ..core.temp_cleanup import cleanup_temp_dir
 from ..core.settings import Settings
 from ..core.api_client import list_models
+from ..core.ocr import find_tessdata_dir
 from ..ai import PROVIDER_CONFIGS, list_providers
 from .color_picker import ColorPickerButton
 
@@ -93,10 +93,27 @@ _KNOWN_LANGS = {
 _LANG_DOWNLOAD_URL = (
     "https://cdn.jsdelivr.net/gh/tesseract-ocr/tessdata_fast@main/{code}.traineddata"
 )
-from ..core.ocr import find_tessdata_dir
 
 # 查找 tessdata 目录 — 已迁移至 snaplens.core.ocr.find_tessdata_dir()
 _find_tessdata_dir = find_tessdata_dir
+
+
+def _auto_sdk_bin_dir() -> str:
+    """获取 SDK DLL 目录的自动检测路径（用于 placeholder 显示）。"""
+    try:
+        from ..ocr.native_binding import _find_sdk_bin
+        p = _find_sdk_bin()
+        if p:
+            return str(p)
+    except Exception:
+        pass
+    return "sdk/tesseract/bin (未找到)"
+
+
+def _auto_tessdata_dir() -> str:
+    """获取 tessdata 目录的自动检测路径（用于 placeholder 显示）。"""
+    p = _find_tessdata_dir()
+    return p if p else "sdk/tesseract/tessdata (未找到)"
 
 
 def _scan_installed_langs(tessdata_dir: str) -> set[str]:
@@ -125,6 +142,9 @@ class _OcrLangManager(QWidget):
         self._notify_manager = notify_manager
         self._settings_dialog_parent = settings_dialog_parent
         self._tessdata_dir = _find_tessdata_dir()
+        # 确保 tessdata 目录存在（首次使用时自动创建，供后续下载）
+        if self._tessdata_dir:
+            os.makedirs(self._tessdata_dir, exist_ok=True)
         self._installed = _scan_installed_langs(self._tessdata_dir) if self._tessdata_dir else set()
         self._selected = set(current_langs.split("+")) if current_langs else set()
         self._checks: dict[str, QCheckBox] = {}
@@ -136,7 +156,9 @@ class _OcrLangManager(QWidget):
         self._main_layout.setSpacing(4)
 
         if not self._tessdata_dir:
-            self._main_layout.addWidget(QLabel("未检测到 tessdata 目录，请先部署 Tesseract。"))
+            self._main_layout.addWidget(QLabel(
+                "未检测到 tessdata 目录，请确认 sdk/tesseract/tessdata/ 可访问。"
+            ))
             return
 
         self._rebuild_ui()
@@ -176,6 +198,23 @@ class _OcrLangManager(QWidget):
         if self._downloads:
             self._main_layout.addSpacing(8)
             self._main_layout.addWidget(QLabel("下载中："))
+            for code, (reply, _old_bar, _old_row) in list(self._downloads.items()):
+                name = _KNOWN_LANGS.get(code, code)
+                dl_row = QHBoxLayout()
+                dl_cb = QCheckBox(f"{name} ({code})")
+                dl_cb.setEnabled(False)
+                self._checks[code] = dl_cb
+                dl_row.addWidget(dl_cb)
+                new_bar = QProgressBar()
+                new_bar.setRange(0, 100)
+                new_bar.setValue(0)
+                new_bar.setFixedWidth(120)
+                new_bar.setFixedHeight(16)
+                new_bar.setFormat("%p%")
+                dl_row.addWidget(new_bar)
+                dl_row.addStretch()
+                self._main_layout.addLayout(dl_row)
+                self._downloads[code] = (reply, new_bar, dl_row)
 
         # ---- 可下载 ----
         if available:
@@ -303,7 +342,9 @@ class _OcrLangManager(QWidget):
                     f.write(data)
                 self._installed.add(code)
                 self._selected.add(code)
-                self._replace_download_row(code, name, row, bar)
+                reply.deleteLater()
+                self._downloads.pop(code, None)
+                self._rebuild_ui()
                 self._notify_manager.notify(
                     "lang_download_success", "语言包下载",
                     f"「{name}」下载完成，已自动启用。",
@@ -326,39 +367,6 @@ class _OcrLangManager(QWidget):
                 "lang_download_fail", "下载失败",
                 f"「{name}」下载失败：{reason}",
             )
-            return
-
-        reply.deleteLater()
-        self._downloads.pop(code, None)
-
-    def _replace_download_row(self, code: str, name: str,
-                                row: QHBoxLayout, bar: QProgressBar):
-        """下载完成后，将进度条行替换为正常的已安装行。"""
-        # 移除进度条
-        bar.deleteLater()
-        # 移除旧 checkbox
-        old_cb = self._checks[code]
-        old_cb.deleteLater()
-
-        # 创建新行
-        # 清除 row 中的所有项
-        while row.count():
-            item = row.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        new_cb = QCheckBox(f"{name} ({code})")
-        new_cb.setChecked(True)  # 默认勾选
-        row.addWidget(new_cb)
-        self._checks[code] = new_cb
-
-        del_btn = QPushButton("删除")
-        del_btn.setFixedWidth(50)
-        del_btn.clicked.connect(
-            lambda _checked=False, c=code, n=name: self._delete_lang(c, n)
-        )
-        row.addWidget(del_btn)
-        row.addStretch()
 
     # ---------------------------------------------------------------- 删除
     def _delete_lang(self, code: str, name: str):
@@ -486,11 +494,10 @@ class SettingsDialog(QDialog):
             # 存储
             "save_format":          (self._format_combo,          "combo_findText",    "storage"),
             "config_dir":           (self._config_edit,           "clear_edit",        "storage"),
-            "temp_dir":             (self._temp_edit,             "clear_edit",        "storage"),
-            "cleanup_on_startup":   (self._cleanup_on_startup,    "checked",           "storage"),
-            "cleanup_on_window_close":(self._cleanup_on_window_close, "checked",       "storage"),
             # OCR
             "ai_ocr_langs":         (self._ocr_lang_list,         "ocr_langs",         "ocr"),
+            "ocr_sdk_bin_dir":      (self._ocr_sdk_bin_edit,     "clear_edit",        "ocr"),
+            "ocr_tessdata_dir":     (self._ocr_tessdata_edit,    "clear_edit",        "ocr"),
             # AI 设置
             "ai_provider":          (self._ai_provider_combo,     "combo_findData",    "ai_settings"),
             "ai_api_key":           (self._ai_api_key_edit,       "text",              "ai_settings"),
@@ -521,8 +528,11 @@ class SettingsDialog(QDialog):
             "notify_translate_fail":(self._notify_translate_fail, "checked",           "general"),
             "notify_ocr_fail":      (self._notify_ocr_fail,       "checked",           "general"),
             "notify_lang_download": (self._notify_lang_download,  "checked",           "general"),
-            # 开发者选项
-            "log_enabled":          (self._log_enabled,           "checked",           "general"),
+            # 日志级别
+            "log_debug_enabled":    (self._log_debug_enabled,   "checked",           "general"),
+            "log_info_enabled":     (self._log_info_enabled,    "checked",           "general"),
+            "log_warning_enabled":  (self._log_warning_enabled, "checked",           "general"),
+            "log_error_enabled":    (self._log_error_enabled,   "checked",           "general"),
         }
 
     # ==================================================== Tab builders
@@ -819,47 +829,6 @@ class SettingsDialog(QDialog):
         config_row.addWidget(config_reset)
         f.addRow("配置保存位置", config_widget)
 
-        # 临时文件目录
-        temp_widget = QWidget()
-        temp_row = QHBoxLayout(temp_widget)
-        temp_row.setContentsMargins(0, 0, 0, 0)
-        temp_text = settings.temp_dir if settings.temp_dir else ""
-        self._temp_edit = QLineEdit(temp_text)
-        if not temp_text:
-            self._temp_edit.setPlaceholderText("（程序所在目录）")
-        temp_browse = QPushButton("浏览…")
-        temp_browse.clicked.connect(self._browse_temp_dir)
-        temp_reset = QPushButton("默认")
-        temp_reset.setToolTip("恢复为程序所在目录")
-        temp_reset.clicked.connect(self._reset_temp_dir)
-        temp_row.addWidget(self._temp_edit)
-        temp_row.addWidget(temp_browse)
-        temp_row.addWidget(temp_reset)
-        f.addRow("临时文件目录", temp_widget)
-
-        # ---- 临时文件清理策略 ----
-        _add_sep(f)
-        warning = QLabel(
-            "⚠ 清理操作会删除临时目录中的所有文件，请勿将重要文件放入该目录。"
-        )
-        warning.setWordWrap(True)
-        f.addRow(warning)
-
-        self._cleanup_on_startup = QCheckBox("每次启动时自动清理临时文件")
-        self._cleanup_on_startup.setChecked(settings.cleanup_on_startup)
-        f.addRow("", self._cleanup_on_startup)
-
-        self._cleanup_on_window_close = QCheckBox(
-            "每次翻译 / OCR 窗口关闭后清理临时文件"
-        )
-        self._cleanup_on_window_close.setChecked(settings.cleanup_on_window_close)
-        f.addRow("", self._cleanup_on_window_close)
-
-        # 立即清理按钮
-        self._clean_now_btn = QPushButton("立即清理临时文件")
-        self._clean_now_btn.clicked.connect(self._on_clean_now)
-        f.addRow("", self._clean_now_btn)
-
         _add_sep(f)
         reset_btn = QPushButton("恢复本页默认")
         reset_btn.clicked.connect(self._reset_storage_tab)
@@ -935,10 +904,21 @@ class SettingsDialog(QDialog):
 
         _add_sep(f)
 
-        # 开发者选项
-        self._log_enabled = QCheckBox("启用控制台日志输出（开发者选项，重启生效）")
-        self._log_enabled.setChecked(settings.log_enabled)
-        f.addRow("", self._log_enabled)
+        # 日志级别开关
+        log_label = QLabel("日志级别（勾选即启用，重启后生效）：")
+        f.addRow(log_label)
+        self._log_debug_enabled = QCheckBox("DEBUG — 调试信息")
+        self._log_debug_enabled.setChecked(settings.log_debug_enabled)
+        f.addRow("", self._log_debug_enabled)
+        self._log_info_enabled = QCheckBox("INFO — 一般信息")
+        self._log_info_enabled.setChecked(settings.log_info_enabled)
+        f.addRow("", self._log_info_enabled)
+        self._log_warning_enabled = QCheckBox("WARNING — 警告信息")
+        self._log_warning_enabled.setChecked(settings.log_warning_enabled)
+        f.addRow("", self._log_warning_enabled)
+        self._log_error_enabled = QCheckBox("ERROR — 错误信息")
+        self._log_error_enabled.setChecked(settings.log_error_enabled)
+        f.addRow("", self._log_error_enabled)
 
         _add_sep(f)
         reset_btn = QPushButton("恢复本页默认")
@@ -1005,34 +985,11 @@ class SettingsDialog(QDialog):
         self._config_edit.clear()
         self._config_edit.setPlaceholderText("（程序所在目录）")
 
-    def _browse_temp_dir(self):
-        d = QFileDialog.getExistingDirectory(self, "选择临时文件目录", self._temp_edit.text())
+    def _browse_dir(self, line_edit: QLineEdit, title: str):
+        """通用目录浏览对话框。"""
+        d = QFileDialog.getExistingDirectory(self, title, line_edit.text())
         if d:
-            self._temp_edit.setText(d)
-
-    def _reset_temp_dir(self):
-        self._temp_edit.clear()
-        self._temp_edit.setPlaceholderText("（程序所在目录）")
-
-    def _on_clean_now(self):
-        """立即清理临时目录中的所有文件。"""
-        temp_dir = self._temp_edit.text().strip()
-        if not temp_dir:
-            from ..core.settings import _default_temp_dir
-            temp_dir = _default_temp_dir()
-        removed = cleanup_temp_dir(temp_dir)
-        if removed > 0:
-            self._notify_manager.info(
-                "清理完成",
-                f"已删除 {removed} 个临时文件。\n目录：{temp_dir}",
-                parent=self,
-            )
-        else:
-            self._notify_manager.info(
-                "清理完成",
-                f"临时目录中没有文件需要清理。\n目录：{temp_dir}",
-                parent=self,
-            )
+            line_edit.setText(d)
 
     # ---- OCR 识别 ----
 
@@ -1040,12 +997,43 @@ class SettingsDialog(QDialog):
         w = QWidget()
         f = QFormLayout(w)
 
+        # ---- 语言包管理 ----
         self._ocr_lang_list = _OcrLangManager(
             settings.ai_ocr_langs,
             notify_manager=self._notify_manager,
             settings_dialog_parent=self,
         )
         f.addRow("语言包管理", self._ocr_lang_list)
+
+        _add_sep(f)
+
+        # ---- SDK DLL 目录 ----
+        self._ocr_sdk_bin_edit = QLineEdit()
+        self._ocr_sdk_bin_edit.setPlaceholderText(
+            f"自动检测（当前: {_auto_sdk_bin_dir()}）")
+        if settings.ocr_sdk_bin_dir:
+            self._ocr_sdk_bin_edit.setText(settings.ocr_sdk_bin_dir)
+        sdk_row = QHBoxLayout()
+        sdk_row.addWidget(self._ocr_sdk_bin_edit)
+        browse_sdk = QPushButton("浏览...")
+        browse_sdk.clicked.connect(
+            lambda: self._browse_dir(self._ocr_sdk_bin_edit, "选择 Tesseract SDK DLL 目录"))
+        sdk_row.addWidget(browse_sdk)
+        f.addRow("SDK DLL 目录", sdk_row)
+
+        # ---- tessdata 目录 ----
+        self._ocr_tessdata_edit = QLineEdit()
+        self._ocr_tessdata_edit.setPlaceholderText(
+            f"自动检测（当前: {_auto_tessdata_dir()}）")
+        if settings.ocr_tessdata_dir:
+            self._ocr_tessdata_edit.setText(settings.ocr_tessdata_dir)
+        td_row = QHBoxLayout()
+        td_row.addWidget(self._ocr_tessdata_edit)
+        browse_td = QPushButton("浏览...")
+        browse_td.clicked.connect(
+            lambda: self._browse_dir(self._ocr_tessdata_edit, "选择 tessdata 语言包目录"))
+        td_row.addWidget(browse_td)
+        f.addRow("tessdata 目录", td_row)
 
         _add_sep(f)
         reset_btn = QPushButton("恢复本页默认")
@@ -1313,10 +1301,6 @@ class SettingsDialog(QDialog):
         t = self._config_edit.text().strip()
         return t if t else None
 
-    def temp_dir(self) -> str | None:
-        t = self._temp_edit.text().strip()
-        return t if t else None
-
     def close_to_tray(self) -> bool | None:
         """关闭窗口行为：True=后台, False=退出, None=询问。"""
         idx = self._close_to_tray_combo.currentIndex()
@@ -1461,8 +1445,17 @@ class SettingsDialog(QDialog):
     def notify_lang_download(self) -> bool:
         return self._notify_lang_download.isChecked()
 
-    def log_enabled(self) -> bool:
-        return self._log_enabled.isChecked()
+    def log_debug_enabled(self) -> bool:
+        return self._log_debug_enabled.isChecked()
+
+    def log_info_enabled(self) -> bool:
+        return self._log_info_enabled.isChecked()
+
+    def log_warning_enabled(self) -> bool:
+        return self._log_warning_enabled.isChecked()
+
+    def log_error_enabled(self) -> bool:
+        return self._log_error_enabled.isChecked()
 
     # ---- AI 翻译 ----
     def ai_provider(self) -> str:
@@ -1568,6 +1561,14 @@ class SettingsDialog(QDialog):
     def ai_ocr_langs(self) -> str:
         return self._ocr_lang_list.get_selected_langs()
 
+    def ocr_sdk_bin_dir(self) -> str:
+        t = self._ocr_sdk_bin_edit.text().strip()
+        return t if t else ""
+
+    def ocr_tessdata_dir(self) -> str:
+        t = self._ocr_tessdata_edit.text().strip()
+        return t if t else ""
+
     def ai_translation_prompt(self) -> str:
         return self._ai_prompt_edit.toPlainText().strip()
 
@@ -1600,13 +1601,6 @@ class SettingsDialog(QDialog):
             return int(self._ai_seed_edit.text().strip())
         except ValueError:
             return 0
-
-    # ---- 临时文件清理 ----
-    def cleanup_on_startup(self) -> bool:
-        return self._cleanup_on_startup.isChecked()
-
-    def cleanup_on_window_close(self) -> bool:
-        return self._cleanup_on_window_close.isChecked()
 
     # ==================================================== 恢复默认（数据驱动）
 
@@ -1663,7 +1657,6 @@ class SettingsDialog(QDialog):
                 widget._rebuild_ui()
             elif setter_type == "clear_edit":
                 widget.clear()
-                widget.setPlaceholderText("（程序所在目录）")
 
     def _on_reset_all(self):
         """恢复全部设置。"""

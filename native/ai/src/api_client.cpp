@@ -22,11 +22,11 @@
 ApiClient::ApiClient(QObject* parent)
     : QObject(parent)
     , nam_(new QNetworkAccessManager(this)) {
-    SNAP_AI_LOG("ApiClient created");
+    SNAP_LOG_DEBUG("ApiClient created");
 }
 
 ApiClient::~ApiClient() {
-    SNAP_AI_LOG("ApiClient destroyed");
+    SNAP_LOG_DEBUG("ApiClient destroyed");
 }
 
 QJsonObject ApiClient::buildRequestBody(
@@ -89,7 +89,7 @@ int ApiClient::runEventLoop(QNetworkReply* reply,
     // 超时定时器
     timer.setSingleShot(true);
     QObject::connect(&timer, &QTimer::timeout, &loop, [&]() {
-        SNAP_AI_LOG("Request timeout after %d seconds, aborting", timeout_secs);
+        SNAP_LOG_WARNING("Request timeout after %d seconds, aborting", timeout_secs);
         reply->abort();
         loop.quit();
     });
@@ -100,7 +100,7 @@ int ApiClient::runEventLoop(QNetworkReply* reply,
     if (cancel_flag) {
         QObject::connect(&cancel_poll, &QTimer::timeout, &loop, [&]() {
             if (*cancel_flag) {
-                SNAP_AI_LOG("Cancel flag set, aborting request");
+                SNAP_LOG_WARNING("Cancel flag set, aborting request");
                 reply->abort();
                 loop.quit();
             }
@@ -148,7 +148,7 @@ ApiClient::ChatResult ApiClient::chatCreate(
     double presence_penalty,
     int seed) {
 
-    SNAP_AI_LOG("chatCreate: base=%s model=%s timeout=%d",
+    SNAP_LOG_INFO("chatCreate: base=%s model=%s timeout=%d",
                 api_base.toUtf8().constData(),
                 model.toUtf8().constData(),
                 timeout_secs);
@@ -165,14 +165,14 @@ ApiClient::ChatResult ApiClient::chatCreate(
     setupRequest(req, api_key, timeout_secs);
 
     QByteArray json_data = QJsonDocument(body).toJson(QJsonDocument::Compact);
-    SNAP_AI_LOG("chatCreate: POST %s body=%d bytes",
+    SNAP_LOG_INFO("chatCreate: POST %s body=%d bytes",
                 url.toString().toUtf8().constData(), json_data.size());
 
     QNetworkReply* reply = nam_->post(req, json_data);
     int loop_ret = runEventLoop(reply, timeout_secs);
 
     if (loop_ret != 0) {
-        SNAP_AI_LOG("chatCreate: loop error %d", loop_ret);
+        SNAP_LOG_WARNING("chatCreate: loop error %d", loop_ret);
         result.error_code = loop_ret;
         result.error_msg = (loop_ret == -5) ? QString("Request cancelled")
                                             : QString("Request timeout");
@@ -182,7 +182,7 @@ ApiClient::ChatResult ApiClient::chatCreate(
 
     // 检查网络错误
     if (reply->error() != QNetworkReply::NoError) {
-        SNAP_AI_LOG("chatCreate: network error %d: %s",
+        SNAP_LOG_ERROR("chatCreate: network error %d: %s",
                     reply->error(), reply->errorString().toUtf8().constData());
         result.error_code = -1;
         result.error_msg = reply->errorString();
@@ -193,7 +193,7 @@ ApiClient::ChatResult ApiClient::chatCreate(
     // 检查 HTTP 状态码
     int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     QByteArray resp_body = reply->readAll();
-    SNAP_AI_LOG("chatCreate: HTTP %d, body=%d bytes", status, resp_body.size());
+    SNAP_LOG_INFO("chatCreate: HTTP %d, body=%d bytes", status, resp_body.size());
 
     if (status < 200 || status >= 300) {
         QString err_msg = parseErrorBody(resp_body);
@@ -201,7 +201,7 @@ ApiClient::ChatResult ApiClient::chatCreate(
         result.error_msg = err_msg.isEmpty()
             ? QString("HTTP %1").arg(status)
             : QString("HTTP %1: %2").arg(status).arg(err_msg);
-        SNAP_AI_LOG("chatCreate: HTTP error: %s", result.error_msg.toUtf8().constData());
+        SNAP_LOG_ERROR("chatCreate: HTTP error: %s", result.error_msg.toUtf8().constData());
         reply->deleteLater();
         return result;
     }
@@ -231,7 +231,7 @@ ApiClient::ChatResult ApiClient::chatCreate(
         result.thinking = message[QLatin1StringView("reasoning_content")].toString();
     }
 
-    SNAP_AI_LOG("chatCreate: OK, content=%d chars, thinking=%d chars",
+    SNAP_LOG_INFO("chatCreate: OK, content=%d chars, thinking=%d chars",
                 result.content.size(), result.thinking.size());
 
     reply->deleteLater();
@@ -257,7 +257,7 @@ int ApiClient::chatCreateStream(
     StreamChunkCallback callback,
     volatile int* cancel_flag) {
 
-    SNAP_AI_LOG("chatCreateStream: base=%s model=%s",
+    SNAP_LOG_DEBUG("chatCreateStream: base=%s model=%s",
                 api_base.toUtf8().constData(),
                 model.toUtf8().constData());
 
@@ -272,7 +272,7 @@ int ApiClient::chatCreateStream(
     req.setRawHeader("Accept", "text/event-stream");
 
     QByteArray json_data = QJsonDocument(body).toJson(QJsonDocument::Compact);
-    SNAP_AI_LOG("chatCreateStream: POST %s (stream)", url.toString().toUtf8().constData());
+    SNAP_LOG_DEBUG("chatCreateStream: POST %s (stream)", url.toString().toUtf8().constData());
 
     QNetworkReply* reply = nam_->post(req, json_data);
 
@@ -303,7 +303,7 @@ int ApiClient::chatCreateStream(
             QByteArray json_str = line.mid(6);
 
             if (json_str == "[DONE]") {
-                SNAP_AI_LOG("chatCreateStream: [DONE] after %d chunks", chunk_count);
+                SNAP_LOG_DEBUG("chatCreateStream: [DONE] after %d chunks", chunk_count);
                 callback(QString(), QString(), true, 0, QString());
                 final_callback_sent = true;
                 return;
@@ -311,7 +311,7 @@ int ApiClient::chatCreateStream(
 
             QJsonDocument doc = QJsonDocument::fromJson(json_str);
             if (!doc.isObject()) {
-                SNAP_AI_LOG("chatCreateStream: invalid SSE JSON: %s",
+                SNAP_LOG_WARNING("chatCreateStream: invalid SSE JSON: %s",
                             json_str.left(100).constData());
                 continue;
             }
@@ -352,7 +352,7 @@ int ApiClient::chatCreateStream(
     // 检查网络错误
     if (reply->error() != QNetworkReply::NoError && !final_callback_sent) {
         QString err = reply->errorString();
-        SNAP_AI_LOG("chatCreateStream: network error: %s", err.toUtf8().constData());
+        SNAP_LOG_ERROR("chatCreateStream: network error: %s", err.toUtf8().constData());
         callback(QString(), QString(), true, -1, err);
         final_callback_sent = true;
         reply->deleteLater();
@@ -366,23 +366,23 @@ int ApiClient::chatCreateStream(
             QByteArray err_body = reply->readAll();
             QString err_msg = parseErrorBody(err_body);
             if (err_msg.isEmpty()) err_msg = QString("HTTP %1").arg(status);
-            SNAP_AI_LOG("chatCreateStream: HTTP error: %s", err_msg.toUtf8().constData());
+            SNAP_LOG_ERROR("chatCreateStream: HTTP error: %s", err_msg.toUtf8().constData());
             callback(QString(), QString(), true, -2, err_msg);
             final_callback_sent = true;
         } else {
             // 流正常结束但没有 [DONE]（兼容某些 API）
-            SNAP_AI_LOG("chatCreateStream: stream ended without [DONE], %d chunks", chunk_count);
+            SNAP_LOG_DEBUG("chatCreateStream: stream ended without [DONE], %d chunks", chunk_count);
             callback(QString(), QString(), true, 0, QString());
             final_callback_sent = true;
         }
     }
 
     if (!sse_buffer.isEmpty()) {
-        SNAP_AI_LOG("chatCreateStream: residual buffer %d bytes after stream end",
+        SNAP_LOG_DEBUG("chatCreateStream: residual buffer %d bytes after stream end",
                     sse_buffer.size());
     }
 
-    SNAP_AI_LOG("chatCreateStream: done, %d chunks processed", chunk_count);
+    SNAP_LOG_DEBUG("chatCreateStream: done, %d chunks processed", chunk_count);
 
     reply->deleteLater();
     return 0;
@@ -397,7 +397,7 @@ ApiClient::ModelsResult ApiClient::listModels(
     const QString& api_base,
     int timeout_secs) {
 
-    SNAP_AI_LOG("listModels: base=%s", api_base.toUtf8().constData());
+    SNAP_LOG_DEBUG("listModels: base=%s", api_base.toUtf8().constData());
 
     ModelsResult result;
 
@@ -417,7 +417,7 @@ ApiClient::ModelsResult ApiClient::listModels(
     }
 
     if (reply->error() != QNetworkReply::NoError) {
-        SNAP_AI_LOG("listModels: network error: %s",
+        SNAP_LOG_ERROR("listModels: network error: %s",
                     reply->errorString().toUtf8().constData());
         result.error_code = -1;
         result.error_msg = reply->errorString();
@@ -427,7 +427,7 @@ ApiClient::ModelsResult ApiClient::listModels(
 
     int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     QByteArray resp_body = reply->readAll();
-    SNAP_AI_LOG("listModels: HTTP %d, body=%d bytes", status, resp_body.size());
+    SNAP_LOG_DEBUG("listModels: HTTP %d, body=%d bytes", status, resp_body.size());
 
     if (status < 200 || status >= 300) {
         QString err_msg = parseErrorBody(resp_body);
@@ -455,7 +455,7 @@ ApiClient::ModelsResult ApiClient::listModels(
         }
     }
 
-    SNAP_AI_LOG("listModels: OK, %d models found", result.model_ids.size());
+    SNAP_LOG_DEBUG("listModels: OK, %d models found", result.model_ids.size());
 
     reply->deleteLater();
     return result;

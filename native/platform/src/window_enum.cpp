@@ -11,6 +11,7 @@
 //          失败时回退到 GetWindowRect。
 //
 #include "window_enum.h"
+#include "common.h"
 
 WindowEnumerator& WindowEnumerator::instance() {
     static WindowEnumerator inst;
@@ -66,10 +67,13 @@ BOOL CALLBACK WindowEnumerator::enum_proc(HWND hwnd, LPARAM lparam) {
 }
 
 int WindowEnumerator::enum_windows() {
+    SNAP_LOG_DEBUG("WindowEnumerator::enum_windows: starting");
     items_.clear();
     EnumWindows(&WindowEnumerator::enum_proc,
                 reinterpret_cast<LPARAM>(this));
-    return static_cast<int>(items_.size());
+    int count = static_cast<int>(items_.size());
+    SNAP_LOG_INFO("WindowEnumerator::enum_windows: count=%d", count);
+    return count;
 }
 
 bool WindowEnumerator::get_item(int idx, long long* hwnd,

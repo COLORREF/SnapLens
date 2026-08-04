@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 project(SnapLensNative
     VERSION 0.1.0
     LANGUAGES CXX
-    DESCRIPTION "SnapLens C++ 原生模块（AI 通信 + 平台能力）"
+    DESCRIPTION "SnapLens C++ 原生模块（AI 通信 + 平台能力 + 统一日志 + OCR）"
 )
 
 # ---- 全局编译标准 ----
@@ -39,5 +39,8 @@ if(MSVC AND CMAKE_RC_COMPILER)
 endif()
 
 # ---- 子项目 ----
+# log 优先构建：platform / ai / ocr 依赖 snaplens_log.dll
+add_subdirectory(log)
 add_subdirectory(platform)
 add_subdirectory(ai)
+add_subdirectory(ocr)

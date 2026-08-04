@@ -10,6 +10,7 @@
 //       确保钩子回调不会调用已销毁的 Python 对象。
 //
 #include "cancel.h"
+#include "common.h"
 
 namespace {
 
@@ -33,6 +34,7 @@ bool CancelManager::install(CancelCallback callback, void* user_data) {
     if (running_.load()) {
         return s_hook_ != nullptr;  // 已安装
     }
+    SNAP_LOG_DEBUG("CancelManager::install: installing");
     callback_ = callback;
     user_data_ = user_data;
     running_ = true;
@@ -43,11 +45,18 @@ bool CancelManager::install(CancelCallback callback, void* user_data) {
         Sleep(1);
     }
     bool ok = s_hook_ != nullptr;
+    if (ok) {
+        SNAP_LOG_INFO("CancelManager::install: installed, hook=%p",
+                      reinterpret_cast<void*>(s_hook_));
+    } else {
+        SNAP_LOG_ERROR("CancelManager::install: hook failed");
+    }
     return ok;
 }
 
 void CancelManager::uninstall() {
     if (!running_.load()) return;
+    SNAP_LOG_DEBUG("CancelManager::uninstall");
     HWND hwnd = hwnd_.load();
     if (hwnd) {
         // 通知消息循环退出
@@ -96,6 +105,11 @@ void CancelManager::thread_main() {
     s_hook_ = SetWindowsHookExW(WH_KEYBOARD_LL,
                                   &CancelManager::low_level_proc,
                                   hinst, 0);
+    if (s_hook_) {
+        SNAP_LOG_DEBUG("CancelManager: hook set");
+    } else {
+        SNAP_LOG_ERROR("CancelManager: hook failed");
+    }
 // 消息循环（低级钩子要求安装线程必须有消息循环）
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -118,12 +132,14 @@ LRESULT CALLBACK CancelManager::low_level_proc(int code, WPARAM wp, LPARAM lp) {
     if (code == HC_ACTION && wp == WM_KEYDOWN) {
         auto* kb = reinterpret_cast<KBDLLHOOKSTRUCT*>(lp);
         if (kb->vkCode == VK_ESCAPE) {
+            SNAP_LOG_DEBUG("CancelManager: Esc pressed");
             CancelManager& mgr = instance();
             // 读取 callback_（局部变量，避免在回调执行期间被 uninstall 清空）
             CancelCallback cb = mgr.callback_;
             if (cb) {
                 cb(mgr.user_data_);
             } else {
+                SNAP_LOG_WARNING("CancelManager: Esc pressed but no callback");
             }
         }
     }

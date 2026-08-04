@@ -9,6 +9,7 @@
 // 5. stop() 通过 PostQuitMessage 让消息循环退出，join 线程
 //
 #include "hotkey.h"
+#include "common.h"
 
 namespace {
 
@@ -36,6 +37,7 @@ bool HotkeyManager::start() {
     if (running_.load()) {
         return hwnd_.load() != nullptr;  // 已启动，返回窗口是否就绪
     }
+    SNAP_LOG_DEBUG("HotkeyManager::start: starting thread");
     running_ = true;
     thread_ = std::thread(&HotkeyManager::thread_main, this);
 
@@ -45,11 +47,14 @@ bool HotkeyManager::start() {
         Sleep(1);
     }
     bool ok = hwnd_.load() != nullptr;
+    SNAP_LOG_INFO("HotkeyManager::start: thread started, hwnd=%p",
+                  reinterpret_cast<void*>(hwnd_.load()));
     return ok;
 }
 
 void HotkeyManager::stop() {
     if (!running_.load()) return;
+    SNAP_LOG_DEBUG("HotkeyManager::stop");
     HWND hwnd = hwnd_.load();
     if (hwnd) {
         // 向后台线程的消息循环发送退出请求
@@ -82,6 +87,7 @@ bool HotkeyManager::register_hotkey(int id, unsigned int mods, unsigned int vk) 
 }
 
 void HotkeyManager::unregister_hotkey(int id) {
+    SNAP_LOG_DEBUG("HotkeyManager::unregister_hotkey: id=%d", id);
     HWND hwnd = hwnd_.load();
     if (!hwnd) return;
     SendMessageW(hwnd, kMsgUnregister, (WPARAM)id, 0);
@@ -107,7 +113,11 @@ void HotkeyManager::thread_main() {
     );
     hwnd_ = hwnd;
     if (!hwnd) {
+        SNAP_LOG_ERROR("HotkeyManager: window creation failed, class=%ls",
+                       kClassName);
 } else {
+    SNAP_LOG_DEBUG("HotkeyManager: window created, class=%ls, hwnd=%p",
+                   kClassName, reinterpret_cast<void*>(hwnd));
     }
 
     // 消息循环：处理 WM_HOTKEY 和自定义消息
@@ -130,6 +140,7 @@ LRESULT CALLBACK HotkeyManager::wnd_proc(HWND hwnd, UINT msg,
         case WM_HOTKEY: {
             // 热键触发：wp 是 hotkey_id
             int id = static_cast<int>(wp);
+            SNAP_LOG_DEBUG("HotkeyManager: WM_HOTKEY id=%d", id);
             HotkeyManager& mgr = instance();
             if (mgr.callback_) {
                 // 跨线程调用 Python 回调
@@ -145,6 +156,11 @@ LRESULT CALLBACK HotkeyManager::wnd_proc(HWND hwnd, UINT msg,
             unsigned int mods = LOWORD(lp);
             unsigned int vk = HIWORD(lp);
             BOOL ok = RegisterHotKey(hwnd, id, mods, vk);
+            if (ok) {
+                SNAP_LOG_INFO("HotkeyManager::register_hotkey: id=%d", id);
+            } else {
+                SNAP_LOG_DEBUG("HotkeyManager::register_hotkey: already registered id=%d", id);
+            }
     return ok ? 1 : 0;
         }
         case kMsgUnregister: {

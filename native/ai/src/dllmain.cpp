@@ -8,6 +8,7 @@
 //
 #include <windows.h>
 #include "../include/ai_client.h"
+#include <snaplens_log.h>
 #include "api_client.h"
 
 #include <QJsonDocument>
@@ -52,10 +53,10 @@ QJsonArray parseMessages(const wchar_t* messages_json) {
 BOOL APIENTRY DllMain(HMODULE, DWORD reason, LPVOID) {
     switch (reason) {
         case DLL_PROCESS_ATTACH:
-            SNAP_AI_LOG("snaplens_ai.dll PROCESS_ATTACH");
+            SNAP_LOG_DEBUG("snaplens_ai.dll PROCESS_ATTACH");
             break;
         case DLL_PROCESS_DETACH:
-            SNAP_AI_LOG("snaplens_ai.dll PROCESS_DETACH");
+            SNAP_LOG_DEBUG("snaplens_ai.dll PROCESS_DETACH");
             break;
         case DLL_THREAD_ATTACH:
         case DLL_THREAD_DETACH:
@@ -72,13 +73,13 @@ extern "C" {
 // ---------- 生命周期 ----------
 
 SNAP_AI_API int snap_ai_init(void) {
-    SNAP_AI_LOG("snap_ai_init() called");
+    SNAP_LOG_DEBUG("snap_ai_init() called");
     // Qt 网络功能不需要额外初始化，QNetworkAccessManager 按需创建即可
     return 0;
 }
 
 SNAP_AI_API void snap_ai_shutdown(void) {
-    SNAP_AI_LOG("snap_ai_shutdown() called");
+    SNAP_LOG_DEBUG("snap_ai_shutdown() called");
 }
 
 // ---------- 非流式聊天补全 ----------
@@ -102,16 +103,16 @@ SNAP_AI_API int snap_ai_chat_create(
     // 参数校验
     if (!api_key || !*api_key) {
         q2w(QString("API Key is empty"), error_out, error_size);
-        SNAP_AI_LOG("snap_ai_chat_create: PARAM_ERROR: empty api_key");
+        SNAP_LOG_ERROR("snap_ai_chat_create: PARAM_ERROR: empty api_key");
         return SNAP_AI_ERR_PARAM;
     }
     if (!api_base || !*api_base) {
         q2w(QString("API base URL is empty"), error_out, error_size);
-        SNAP_AI_LOG("snap_ai_chat_create: PARAM_ERROR: empty api_base");
+        SNAP_LOG_ERROR("snap_ai_chat_create: PARAM_ERROR: empty api_base");
         return SNAP_AI_ERR_PARAM;
     }
 
-    SNAP_AI_LOG("snap_ai_chat_create: base=%ls model=%ls timeout=%d",
+    SNAP_LOG_INFO("snap_ai_chat_create: base=%ls model=%ls timeout=%d",
                 api_base, model, timeout_secs);
 
     ApiClient client;
@@ -123,7 +124,7 @@ SNAP_AI_API int snap_ai_chat_create(
         top_p, frequency_penalty, presence_penalty, seed);
 
     if (result.error_code != 0) {
-        SNAP_AI_LOG("snap_ai_chat_create: FAIL code=%d msg=%s",
+        SNAP_LOG_ERROR("snap_ai_chat_create: FAIL code=%d msg=%s",
                     result.error_code, result.error_msg.toUtf8().constData());
         q2w(result.error_msg, error_out, error_size);
         return result.error_code;
@@ -131,7 +132,7 @@ SNAP_AI_API int snap_ai_chat_create(
 
     q2w(result.content, content_out, content_size);
     q2w(result.thinking, thinking_out, thinking_size);
-    SNAP_AI_LOG("snap_ai_chat_create: OK");
+    SNAP_LOG_INFO("snap_ai_chat_create: OK");
     return SNAP_AI_OK;
 }
 
@@ -183,15 +184,15 @@ SNAP_AI_API int snap_ai_chat_create_stream(
     int* cancel_flag) {
 
     if (!on_chunk) {
-        SNAP_AI_LOG("snap_ai_chat_create_stream: PARAM_ERROR: null callback");
+        SNAP_LOG_ERROR("snap_ai_chat_create_stream: PARAM_ERROR: null callback");
         return SNAP_AI_ERR_PARAM;
     }
     if (!api_key || !*api_key || !api_base || !*api_base) {
-        SNAP_AI_LOG("snap_ai_chat_create_stream: PARAM_ERROR: empty api_key/base");
+        SNAP_LOG_ERROR("snap_ai_chat_create_stream: PARAM_ERROR: empty api_key/base");
         return SNAP_AI_ERR_PARAM;
     }
 
-    SNAP_AI_LOG("snap_ai_chat_create_stream: base=%ls model=%ls",
+    SNAP_LOG_INFO("snap_ai_chat_create_stream: base=%ls model=%ls",
                 api_base, model);
 
     StreamCallbackCtx ctx{on_chunk, user_data};
@@ -210,7 +211,7 @@ SNAP_AI_API int snap_ai_chat_create_stream(
         },
         cancel_flag);
 
-    SNAP_AI_LOG("snap_ai_chat_create_stream: return=%d", ret);
+    SNAP_LOG_INFO("snap_ai_chat_create_stream: return=%d", ret);
     return ret;
 }
 
@@ -228,13 +229,13 @@ SNAP_AI_API int snap_ai_list_models(
         return SNAP_AI_ERR_PARAM;
     }
 
-    SNAP_AI_LOG("snap_ai_list_models: base=%ls", api_base);
+    SNAP_LOG_INFO("snap_ai_list_models: base=%ls", api_base);
 
     ApiClient client;
     auto result = client.listModels(w2q(api_key), w2q(api_base), timeout_secs);
 
     if (result.error_code != 0) {
-        SNAP_AI_LOG("snap_ai_list_models: FAIL code=%d msg=%s",
+        SNAP_LOG_ERROR("snap_ai_list_models: FAIL code=%d msg=%s",
                     result.error_code, result.error_msg.toUtf8().constData());
         q2w(result.error_msg, error_out, error_size);
         return result.error_code;
@@ -249,7 +250,7 @@ SNAP_AI_API int snap_ai_list_models(
         QJsonDocument(arr).toJson(QJsonDocument::Compact));
     q2w(json_str, models_out, models_size);
 
-    SNAP_AI_LOG("snap_ai_list_models: OK, %d models", result.model_ids.size());
+    SNAP_LOG_INFO("snap_ai_list_models: OK, %d models", result.model_ids.size());
     return SNAP_AI_OK;
 }
 

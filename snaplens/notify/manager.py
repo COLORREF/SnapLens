@@ -91,7 +91,8 @@ class NotifyManager:
         # 多通道分发
         channels = ndef.channels
         if Channel.LOG in channels and (self._settings is None
-                                        or self._settings.log_enabled):
+                                        or (self._settings.log_debug_enabled or self._settings.log_info_enabled
+                                            or self._settings.log_warning_enabled or self._settings.log_error_enabled)):
             self._log_channel.send(ndef.level, title, message)
         if Channel.TRAY in channels:
             self._tray_channel.send(ndef.level, title, message)

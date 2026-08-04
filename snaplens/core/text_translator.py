@@ -52,6 +52,9 @@ class TextTranslateService(QThread):
 
     def run(self):
         try:
+            if not self._source_text.strip():
+                raise ValueError("翻译内容为空")
+
             # 如果传入了完整提示词则直接使用，否则从模板构建
             if self._full_prompt:
                 prompt = self._full_prompt

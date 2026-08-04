@@ -5,11 +5,10 @@
 重要提示给用户：清理操作会删除 temp 目录下的所有文件和子目录，
 请勿将重要文件放入该目录。
 """
-import logging
 import os
 import shutil
 
-_log = logging.getLogger(__name__)
+from ..log import log_info, log_warning
 
 
 def cleanup_temp_dir(temp_dir: str) -> int:
@@ -37,14 +36,11 @@ def cleanup_temp_dir(temp_dir: str) -> int:
                 elif entry.is_dir():
                     shutil.rmtree(entry.path)
                 removed += 1
-            except OSError:
-                pass
-    except OSError:
-        pass
+            except OSError as e:
+                log_warning(f"清理临时条目失败: {e}")
+    except OSError as e:
+        log_warning(f"扫描临时目录失败: {e}")
 
     if removed:
-        _log.info(
-            "temp cleanup: removed %d item(s) from %s",
-            removed, temp_dir,
-        )
+        log_info(f"temp cleanup: removed {removed} item(s) from {temp_dir}")
     return removed

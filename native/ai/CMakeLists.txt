@@ -15,7 +15,7 @@ target_include_directories(snaplens_ai
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_link_libraries(snaplens_ai PRIVATE Qt6::Core Qt6::Network)
+target_link_libraries(snaplens_ai PRIVATE Qt6::Core Qt6::Network snaplens_log)
 target_compile_definitions(snaplens_ai PRIVATE SNAP_AI_EXPORTS)
 
 # MSVC 选项

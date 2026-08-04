@@ -10,15 +10,14 @@
 - 用户可在设置中指定自定义目录，程序会在程序目录下创建 .config_location
   文件记录自定义路径；下次启动时优先读取该文件。
 """
-import logging
 import os
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from PySide6.QtCore import QJsonDocument, QStandardPaths
 
-_log = logging.getLogger(__name__)
+from ..log import log_error, log_warning
 
 _SETTINGS_FILE = "settings.json"
 _BOOTSTRAP_FILE = ".config_location"
@@ -55,7 +54,10 @@ def _one_of(*choices):
     """返回枚举验证器：不在列表中的值回退到第一个选项。"""
 
     def _f(v):
-        return v if v in choices else choices[0]
+        if v in choices:
+            return v
+        log_warning(f"配置值 '{v}' 不在有效选项 {choices} 中，回退为 '{choices[0]}'")
+        return choices[0]
 
     return _f
 
@@ -146,11 +148,6 @@ SETTING_DEFS: list[SettingDef] = [
     SettingDef("save_format", "png", _one_of("png", "jpg", "bmp")),
     # config_dir 为 None 表示程序目录
     SettingDef("config_dir", None),
-    # temp_dir 为 None 时使用系统临时目录
-    SettingDef("temp_dir", None),
-    # ---- 临时文件清理 ----
-    SettingDef("cleanup_on_startup", True),
-    SettingDef("cleanup_on_window_close", True),
     # close_to_tray: True=最小化到托盘, False=退出程序, None=每次询问
     SettingDef("close_to_tray", None),
     # layout_orientation: True=左右布局, False=上下布局
@@ -165,7 +162,10 @@ SETTING_DEFS: list[SettingDef] = [
     SettingDef("notify_translate_fail", True),
     SettingDef("notify_ocr_fail", True),
     SettingDef("notify_lang_download", True),
-    SettingDef("log_enabled", True),         # 全局日志开关：关闭后所有通知不写 LOG
+    SettingDef("log_debug_enabled", True),
+    SettingDef("log_info_enabled", True),
+    SettingDef("log_warning_enabled", True),
+    SettingDef("log_error_enabled", True),
     # ---- AI 翻译 ----
     SettingDef("ai_provider", "deepseek", _one_of(
         "deepseek", "openai", "qwen", "kimi", "glm", "hunyuan", "doubao", "qianfan",
@@ -185,6 +185,10 @@ SETTING_DEFS: list[SettingDef] = [
     SettingDef("ai_ocr_langs", "chi_sim+eng+jpn+kor"),
     SettingDef("ai_confirm_before_translate", False),
     SettingDef("ai_stream_thinking", True),  # 流式推送 AI 思考过程
+    # ---- OCR 路径 ----
+    # 空字符串 = 自动检测；设置后优先使用自定义路径
+    SettingDef("ocr_sdk_bin_dir", ""),     # Tesseract SDK DLL 目录（sdk/tesseract/bin/）
+    SettingDef("ocr_tessdata_dir", ""),    # tessdata 语言包目录
     # ---- 文本翻译 ----
     SettingDef("text_translation_prompt", _DEFAULT_TEXT_TRANSLATION_PROMPT),
     # ---- 布局 ----
@@ -232,7 +236,7 @@ def _write_bootstrap(custom_dir: str) -> None:
                   "w", encoding="utf-8") as f:
             f.write(custom_dir)
     except OSError as e:
-        _log.warning("写入引导文件失败: %s", e)
+        log_warning(f"写入引导文件失败: {e}")
 
 
 def _default_save_dir() -> str:
@@ -240,11 +244,6 @@ def _default_save_dir() -> str:
         QStandardPaths.StandardLocation.PicturesLocation
     )
     return os.path.join(pics or os.path.expanduser("~"), "SnapLens")
-
-
-def _default_temp_dir() -> str:
-    """默认临时目录：程序目录下的 temp 子文件夹。"""
-    return os.path.join(_program_dir(), "temp")
 
 
 class Settings:
@@ -256,10 +255,6 @@ class Settings:
         settings.update_from_dict(d)        # 批量更新（如从设置对话框回写）
         settings.save()                     # 持久化
     """
-
-    # ---- 名单外字段（不在 SETTING_DEFS 中，需手动处理） ----
-    # save_dir / temp_dir 的默认值与运行时环境相关，无法静态定义
-    _EXTRA_FIELDS = {"save_dir", "temp_dir", "settings_version"}
 
     def __init__(self, data: dict):
         # 1) 从 SETTING_DEFS 自动生成属性
@@ -273,9 +268,6 @@ class Settings:
         self.save_dir = os.path.normpath(
             data.get("save_dir") or _default_save_dir()
         )
-        self.temp_dir = os.path.normpath(
-            data.get("temp_dir") or _default_temp_dir()
-        )
 
     # ---- 序列化 ----
 
@@ -285,7 +277,6 @@ class Settings:
         for d in SETTING_DEFS:
             result[d.key] = getattr(self, d.key)
         result["save_dir"] = self.save_dir
-        result["temp_dir"] = self.temp_dir
         return result
 
     def update_from_dict(self, data: dict) -> None:
@@ -298,8 +289,6 @@ class Settings:
                 setattr(self, d.key, raw)
         if "save_dir" in data:
             self.save_dir = os.path.normpath(data["save_dir"] or _default_save_dir())
-        if "temp_dir" in data:
-            self.temp_dir = os.path.normpath(data["temp_dir"] or _default_temp_dir())
 
     # ---- 持久化 ----
 
@@ -309,14 +298,14 @@ class Settings:
         与旧版不同：保存失败时记录错误日志，不再静默吞异常。
         """
         target_dir = self.config_dir or _program_dir()
+        path = os.path.join(target_dir, _SETTINGS_FILE)
         try:
             os.makedirs(target_dir, exist_ok=True)
-            path = os.path.join(target_dir, _SETTINGS_FILE)
             doc = QJsonDocument.fromVariant(self.to_dict())
             with open(path, "wb") as f:
                 f.write(doc.toJson(QJsonDocument.JsonFormat.Indented).data())
         except OSError as e:
-            _log.error("保存设置失败 (%s): %s", path, e)
+            log_error(f"保存设置失败 ({path}): {e}")
             return
         # 写入引导文件（自定义目录时）
         if self.config_dir:
@@ -352,6 +341,6 @@ class Settings:
             # 首次运行：返回默认配置，由引导向导负责首次保存
             return cls(cls.defaults_dict())
         except (OSError, ValueError) as e:
-            _log.warning("读取设置文件失败: %s", e)
+            log_warning(f"读取设置文件失败: {e}")
             return cls(cls.defaults_dict())
         return cls(data)

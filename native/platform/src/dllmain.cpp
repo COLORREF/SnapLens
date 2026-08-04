@@ -24,8 +24,10 @@ BOOL APIENTRY DllMain(HMODULE, DWORD reason, LPVOID) {
     // 所有资源按需在 snap_init 或各 Manager::install 中创建
     switch (reason) {
         case DLL_PROCESS_ATTACH:
+            SNAP_LOG_DEBUG("DllMain: PROCESS_ATTACH");
             break;
         case DLL_PROCESS_DETACH:
+            SNAP_LOG_DEBUG("DllMain: PROCESS_DETACH");
             break;
         case DLL_THREAD_ATTACH:
         case DLL_THREAD_DETACH:
@@ -43,12 +45,14 @@ extern "C" {
 // ---------- 生命周期 ----------
 
 SNAP_API int snap_init(void) {
+    SNAP_LOG_DEBUG("snap_init");
 // 当前为空操作，所有 Manager 都是单例，按需启动
     // 保留接口用于未来扩展（如全局 COM 初始化）
     return 1;
 }
 
 SNAP_API void snap_shutdown(void) {
+    SNAP_LOG_DEBUG("snap_shutdown");
     HotkeyManager::instance().stop();
     CancelManager::instance().uninstall();
     // 光标限制解除（如果之前处于限制状态）
@@ -59,6 +63,8 @@ SNAP_API void snap_shutdown(void) {
 
 SNAP_API void snap_hotkey_set_callback(void (*callback)(int, void*),
                                           void* user_data) {
+    SNAP_LOG_DEBUG("snap_hotkey_set_callback: callback=%p, user_data=%p",
+                   reinterpret_cast<void*>(callback), user_data);
     HotkeyManager::instance().set_callback(callback, user_data);
 }
 
@@ -67,13 +73,18 @@ SNAP_API int snap_hotkey_register(int hotkey_id, unsigned int mods,
     auto& mgr = HotkeyManager::instance();
     // 后台线程按需启动（首次调用时）
     if (!mgr.start()) {
+        SNAP_LOG_ERROR("snap_hotkey_register: start() failed for id=%d",
+                       hotkey_id);
     return 0;
     }
     int ok = mgr.register_hotkey(hotkey_id, mods, vk) ? 1 : 0;
+    SNAP_LOG_DEBUG("snap_hotkey_register: id=%d, mods=%u, vk=%u, ok=%d",
+                   hotkey_id, mods, vk, ok);
     return ok;
 }
 
 SNAP_API void snap_hotkey_unregister(int hotkey_id) {
+    SNAP_LOG_DEBUG("snap_hotkey_unregister: id=%d", hotkey_id);
     HotkeyManager::instance().unregister_hotkey(hotkey_id);
 }
 
@@ -81,6 +92,7 @@ SNAP_API void snap_hotkey_unregister(int hotkey_id) {
 
 SNAP_API int snap_window_enum(void) {
     int n = WindowEnumerator::instance().enum_windows();
+    SNAP_LOG_DEBUG("snap_window_enum: count=%d", n);
     return n;
 }
 
@@ -116,23 +128,28 @@ SNAP_API void snap_cursor_get_pos(int* x, int* y) {
 // ---------- Esc 拦截 ----------
 
 SNAP_API int snap_cancel_install(void (*callback)(void*), void* user_data) {
+    SNAP_LOG_DEBUG("snap_cancel_install");
     int ok = CancelManager::instance().install(callback, user_data) ? 1 : 0;
     return ok;
 }
 
 SNAP_API void snap_cancel_uninstall(void) {
+    SNAP_LOG_DEBUG("snap_cancel_uninstall");
     CancelManager::instance().uninstall();
 }
 
 // ---------- 光标限制 ----------
 
 SNAP_API int snap_clip_cursor(int left, int top, int right, int bottom) {
+    SNAP_LOG_DEBUG("snap_clip_cursor: rect=(%d,%d,%d,%d)",
+                   left, top, right, bottom);
     RECT r{left, top, right, bottom};
     int ok = ClipCursor(&r) ? 1 : 0;
     return ok;
 }
 
 SNAP_API void snap_clip_cursor_release(void) {
+    SNAP_LOG_DEBUG("snap_clip_cursor_release");
 ClipCursor(nullptr);
 }
 

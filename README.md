@@ -16,10 +16,12 @@ Windows 桌面工具：**截图 + OCR 文字识别 + AI 翻译**，功能对标 
 
 当前处于**混合架构过渡期**：项目正在进行从 Python 到 Qt C++ 的渐进式重构。
 
-- **Python 层**（`snaplens/`）：UI、业务编排、设置、OCR — 基于 PySide6
+- **Python 层**（`snaplens/`）：UI、业务编排、设置 — 基于 PySide6
 - **C++ 原生层**（`native/`）：性能敏感模块以 DLL 形式提供，通过 ctypes 调用
+  - `snaplens_log.dll` — 统一日志（qDebug + Qt 消息处理器，全平台编码适配）
   - `snaplens_platform.dll` — 全局热键、窗口枚举、光标、Esc 拦截（Win32）
   - `snaplens_ai.dll` — AI 翻译 API 通信（Qt Network，支持 OpenAI 兼容接口）
+  - `snaplens_ocr.dll` — OCR 文字识别（Tesseract 5.5 C API + Leptonica，进程内调用）
 
 **开发路线**：逐模块用 Qt C++ 重写 → 编译为 DLL → Python 调用 → 最终全部迁移为纯 C++ Qt 应用。
 
@@ -41,6 +43,8 @@ Windows 桌面工具：**截图 + OCR 文字识别 + AI 翻译**，功能对标 
 pip install -r requirements.txt
 ```
 
+仅依赖 PySide6（UI 框架），OCR 和 AI 通信均通过 C++ DLL 实现，无需额外 Python 包。
+
 ### 2. 编译原生 DLL
 
 使用 CLion 或命令行打开 `native/` 目录：
@@ -52,27 +56,34 @@ cmake --build cmake-build-release
 ```
 
 编译产物输出到 `native/bin/`：
-- `snaplens_platform.dll`
-- `snaplens_ai.dll`
 
-> 注意：`snaplens_ai.dll` 依赖 Qt6（Core + Network），运行时需要 Qt 的 DLL 在搜索路径中。
-> Python 绑定层会自动查找 `D:\ProgramFiles\Qt\6.*\msvc2022_64\bin`，也可设置 `QT6_DIR` 环境变量指定路径。
+| DLL | 说明 | 运行时依赖 |
+|-----|------|-----------|
+| `snaplens_log.dll` | 统一日志 | Qt6::Core |
+| `snaplens_platform.dll` | 热键、窗口枚举、Esc 拦截、光标 | snaplens_log.dll |
+| `snaplens_ai.dll` | AI 翻译 API 通信 | Qt6::Core + Qt6::Network + snaplens_log.dll |
+| `snaplens_ocr.dll` | OCR 文字识别 | Tesseract 5.5 + Leptonica 1.87 + snaplens_log.dll |
 
-### 3. 配置 Tesseract OCR
+> 注意：`snaplens_ai.dll` 运行时需要 Qt 的 DLL 在搜索路径中。Python 绑定层会自动查找 `D:\ProgramFiles\Qt\6.*\msvc2022_64\bin`，也可设置 `QT6_DIR` 环境变量。
 
-AI 图片翻译依赖 OCR 提取文字。程序自动检测系统安装目录（`C:\Program Files\Tesseract-OCR`），或可使用便携版放入项目 `tesseract/` 目录：
+### 3. Tesseract SDK
+
+OCR 模块依赖 Tesseract 5.5 C API，SDK 位于 `sdk/tesseract/` 目录：
 
 ```
-tesseract/
-├── tesseract.exe
-├── libtesseract-5.dll
-├── libleptonica-6.dll
-└── tessdata/
-    ├── chi_sim.traineddata   中文简体（必需）
-    └── eng.traineddata       英文（必需）
+sdk/tesseract/
+├── include/          # tesseract/ + leptonica/ 头文件（编译时）
+├── lib/              # .lib 链接库（编译时）
+├── bin/              # DLL 运行时依赖链（运行时）
+│   ├── tesseract55.dll
+│   ├── leptonica-1.87.0.dll
+│   └── *.dll         # 图像解码库（png/jpeg/tiff/webp/gif 等）
+└── tessdata/         # 语言包目录（运行时）
+    ├── chi_sim.traineddata
+    └── eng.traineddata
 ```
 
-语言包可在设置对话框中在线下载。
+语言包可在设置对话框中在线下载。SDK 不在源码仓库中，需自行准备。
 
 ### 4. 运行
 
@@ -99,7 +110,6 @@ python main.py
 
 - **坐标标签** — `1920, 1080` 格式，颜色/背景可配
 - **像素颜色标签** — `255, 0, 170`（RGB）或 `#FF00AA`（Hex），格式可切换
-- **复合布局** — 坐标与颜色合并为一行，永不重叠
 
 ### 像素放大镜
 
@@ -107,8 +117,8 @@ python main.py
 
 - **倍率** 4.0× ~ 20.0×，支持滚轮实时调节
 - **像素网格** 可开关，颜色/不透明度可配
-- **屏幕边缘策略**：裁剪（缩小）或填充（固定大小 + 纯色填充）
-- **倍率标签** 可开关，颜色/不透明度可配
+- **屏幕边缘策略**：裁剪或填充
+- **倍率标签** 可开关
 
 ### 截图结果操作
 
@@ -118,7 +128,7 @@ python main.py
 |------|------|
 | 💾 保存 | 存为 PNG / JPG / BMP |
 | 📌 钉图 | 置顶窗口，可拖动/缩放/右键菜单 |
-| 🔤 OCR | 文字识别（Tesseract） |
+| 🔤 OCR | 文字识别（Tesseract 5.5，进程内 C++ DLL） |
 | 🌐 AI 翻译 | 发送到 AI 翻译窗口 |
 | ✓ 确认 | 复制到剪贴板 |
 
@@ -130,24 +140,29 @@ python main.py
 
 ### OCR 文字识别
 
-基于 Tesseract OCR 引擎，支持中英日韩等多语言识别。
+通过 `snaplens_ocr.dll` 进程内调用 Tesseract 5.5 C API（LSTM 引擎，OEM_LSTM_ONLY），支持中英日韩等多语言识别。
+
+- 无外部进程、无 pytesseract 依赖
+- 支持内存像素和文件路径两种输入方式
+- 语言包缺失时自动降级为英文，并记录日志
 
 ### AI 翻译
 
-支持 **截图翻译** 和 **文本翻译** 两种模式，底层通过 C++ DLL (Qt Network) 实现 OpenAI 兼容 API 通信：
+支持 **截图翻译** 和 **文本翻译** 两种模式：
 
 - **截图翻译** — 选中区域 → OCR 提取文字 → AI 翻译 → 显示结果
 - **文本翻译** — 主窗口输入文本，直接调用 AI 翻译
 - 流式输出：翻译结果逐 token 实时显示，"AI 思考"过程可选显示
 - 支持多场景（通用 / IT / 医学 / 金融 / 法律 / 学术 / 文学）
+- 内置参数校验：未配置模型/API 地址/翻译内容时在本地拦截，给出明确错误提示
 
 #### 支持的服务商
 
 | 服务商 | 配置方式 |
 |--------|----------|
-| **DeepSeek**（默认） | 填入 API Key 即可 |
-| **OpenAI** | 填入 API Key + API 地址 |
-| **通义千问** | 填入 API Key + API 地址 |
+| **DeepSeek**（默认） | 填入 API Key + 选择模型即可 |
+| **OpenAI** | 填入 API Key + API 地址 + 模型 |
+| **通义千问** | 填入 API Key + API 地址 + 模型 |
 | **Kimi / GLM / 混元 / 豆包 / 文心一言** | 同上，切换服务商即可 |
 
 可在设置中自动获取模型列表，或手动输入模型名称。
@@ -165,6 +180,14 @@ python main.py
 | **翻译模式** | 显示文本翻译主窗口 | 日常翻译为主 |
 | **截图模式** | 后台静默，仅托盘图标 | 以截图为主 |
 
+### 日志系统
+
+统一格式 `[snap LEVEL file:line] msg` 输出到 stderr，通过 `snaplens_log.dll` (qDebug + Qt 默认消息处理器) 实现。
+
+- 设置中可按 **DEBUG / INFO / WARNING / ERROR** 四级独立开关
+- 全模块覆盖：C++ DLL（AI / Platform / OCR）和 Python 层全部接入
+- 跨平台编码适配：Windows 控制台原生输出，Linux/macOS 为 UTF-8
+
 ---
 
 ## 目录结构
@@ -172,48 +195,33 @@ python main.py
 ```
 SnapLens/
 ├── main.py                  程序入口
-├── requirements.txt         Python 依赖清单
+├── requirements.txt         Python 依赖（仅 PySide6）
 │
 ├── native/                  C++ 原生模块（统一 CMake 项目）
-│   ├── CMakeLists.txt       根：全局编译标准 + 子项目
-│   ├── ai/                  AI 通信 DLL（Qt Network）
-│   │   ├── CMakeLists.txt
-│   │   ├── include/ai_client.h       C ABI 公共头
-│   │   └── src/                      实现文件
-│   ├── platform/            平台能力 DLL（Win32）
-│   │   ├── CMakeLists.txt
-│   │   ├── include/snaplens_platform.h
-│   │   └── src/                      热键 / 窗口枚举 / Esc 拦截 / 光标
+│   ├── CMakeLists.txt       根：全局编译标准 + 四个子项目
+│   ├── log/                 统一日志 DLL（qDebug + Qt 消息处理器）
+│   ├── platform/            平台能力 DLL（Win32：热键/窗口/ESC/光标）
+│   ├── ai/                  AI 通信 DLL（Qt Network：OpenAI 兼容 API）
+│   ├── ocr/                 OCR 识别 DLL（Tesseract 5.5 + Leptonica）
 │   └── bin/                 DLL 编译输出目录
 │
+├── sdk/tesseract/           Tesseract 5.5 开发套件（编译+运行）
+│   ├── include/             头文件（编译时）
+│   ├── lib/                 链接库（编译时）
+│   ├── bin/                 DLL 运行时（tesseract55 + leptonica + 图像解码）
+│   └── tessdata/            语言包（运行时）
+│
 ├── snaplens/                Python 核心代码包
-│   ├── __init__.py          版本定义
 │   ├── app.py               应用控制器
-│   │
-│   ├── core/
-│   │   ├── settings.py      设置读写（JSON 持久化，70+ 项数据驱动）
-│   │   ├── capture.py       多屏截图与裁剪（混合 DPI 坐标换算）
-│   │   ├── ocr.py           Tesseract OCR 引擎查找与调用
-│   │   ├── api_client.py    AI API 客户端（ctypes → C++ DLL）
-│   │   ├── text_translator.py   文本翻译后台线程
-│   │   └── temp_cleanup.py      临时文件清理
-│   │
-│   ├── ai/                  翻译模块
-│   │   ├── __init__.py      厂商注册表与工厂（8 厂商）
-│   │   ├── base.py          AITranslator 抽象接口
-│   │   ├── openai_compat.py OpenAI 兼容翻译器
-│   │   └── native_binding.py    ctypes → snaplens_ai.dll
-│   │
-│   ├── platform/            平台能力抽象层 + Python 绑定
-│   │   ├── base.py          接口定义
-│   │   ├── __init__.py      工厂函数
-│   │   └── native_binding.py    ctypes → snaplens_platform.dll
-│   │
+│   ├── core/                业务层（settings / capture / ocr / api_client / translator）
+│   ├── ai/                  翻译模块（8 厂商注册 + C++ DLL 绑定）
+│   ├── log/                 日志模块 Python 绑定（ctypes → snaplens_log.dll）
+│   ├── ocr/                 OCR 模块 Python 绑定（ctypes → snaplens_ocr.dll）
+│   ├── platform/            平台能力抽象层 + DLL 绑定
 │   ├── notify/              通知系统（托盘/弹窗/日志三通道）
 │   ├── ui/                  用户界面（主窗口/截图/OCR/翻译/设置/钉图）
 │   └── assets/              SVG 图标 + Qt 资源文件
 │
-├── tesseract/               Tesseract OCR 便携版（源码仓库不包含）
 └── temp/                    临时文件目录（运行时生成）
 ```
 
@@ -241,7 +249,7 @@ Qt 本身不提供"系统级全局热键"和"枚举其它应用窗口"两个能�
 - `snaplens/platform/base.py` — Python 接口定义 + Null 降级实现
 - `snaplens/platform/native_binding.py` — ctypes 调用 DLL
 
-接入 macOS / Linux 时只需新增对应 native 后端并在 Python 工厂中登记。未接入的平台自动降级为 Null 实现。其余模块（截图、托盘、钉图、设置）均为纯 Qt 实现，无需改动。
+接入 macOS / Linux 时只需新增对应 native 后端并在 Python 工厂中登记。日志系统（`snaplens_log.dll`）基于 qDebug + Qt 默认消息处理器，跨平台零差异。
 
 ---
 
@@ -251,3 +259,5 @@ Qt 本身不提供"系统级全局热键"和"枚举其它应用窗口"两个能�
 - 窗口点选基于 DWM 可见边框，个别自绘窗口可能与视觉边界略有偏差
 - OCR 语言包可在设置对话框中在线下载
 - AI 翻译支持 8 个服务商，通过 C++ DLL (Qt Network) 统一实现 OpenAI 兼容通信
+- OCR 通过 C++ DLL (Tesseract 5.5 C API) 进程内调用，无需安装外部 Tesseract
+- 未配置模型/API 地址/翻译内容时会在本地拦截并给出明确错误提示
