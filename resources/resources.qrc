@@ -1,0 +1,11 @@
+<RCC>
+    <!-- SnapLens 资源文件 — 图标 -->
+    <qresource prefix="/icons">
+        <file alias="Save">icons/Save.svg</file>
+        <file alias="Pushpin">icons/Pushpin.svg</file>
+        <file alias="Close">icons/Close.svg</file>
+        <file alias="Check">icons/Check.svg</file>
+        <file alias="Translate">icons/Translate.svg</file>
+        <file alias="Ocr">icons/Ocr.svg</file>
+    </qresource>
+</RCC>

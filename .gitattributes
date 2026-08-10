@@ -1,8 +1,49 @@
-# SVG 图标不计入语言统计
-*.svg linguist-vendored
+# =============================================================================
+# SnapLens (C++ Qt6) — .gitattributes
+# =============================================================================
 
-# 编译产物不计入语言统计（由 pyside6-rcc 自动生成）
-prscr/assets/assets_rc.py linguist-vendored
+# 统一行尾策略：文本文件按仓库规范自动转换（core.autocrlf 配合）
+* text=auto
 
-# 文本文件统一 LF 换行
-* text=auto eol=lf
+# ── 文本文件显式声明 ────────────────────────────────────────────────────────
+*.cpp    text
+*.h      text
+*.hpp    text
+*.c      text
+*.cc     text
+*.cmake  text
+*.txt    text
+*.md     text
+*.json   text
+*.qrc    text
+*.svg    text
+*.yml    text
+*.yaml   text
+*.ini    text
+*.bat    text eol=crlf
+*.cmd    text eol=crlf
+*.ps1    text eol=crlf
+*.sh     text eol=lf
+
+# ── 二进制文件（禁止行尾转换 / diff）────────────────────────────────────────
+*.dll          binary
+*.exe          binary
+*.lib          binary
+*.a            binary
+*.obj          binary
+*.o            binary
+*.pdb          binary
+*.traineddata  binary
+*.png          binary
+*.jpg          binary
+*.jpeg         binary
+*.bmp          binary
+*.ico          binary
+*.icns         binary
+*.zip          binary
+*.7z           binary
+*.gz           binary
+
+# ── GitHub 语言统计（可选）──────────────────────────────────────────────────
+*.cpp linguist-language=C++
+*.h   linguist-language=C++
