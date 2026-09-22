@@ -1,7 +1,8 @@
 #ifndef SNAPLENS_OCR_OCR_WINDOW_H
 #define SNAPLENS_OCR_OCR_WINDOW_H
 
-#include <QWidget>
+#include "ElaWidgetTools.hpp"
+
 #include <QImage>
 #include <QPixmap>
 #include <QString>
@@ -36,7 +37,7 @@ private:
     QString m_tessdataDir;
 };
 
-class OcrWindow : public QWidget {
+class OcrWindow : public ElaWindow {
     Q_OBJECT
 public:
     explicit OcrWindow(const QPixmap& pixmap, Settings* settings,
@@ -68,6 +69,7 @@ private:
     QPlainTextEdit* m_textEdit = nullptr;
     QLabel*        m_statusLabel = nullptr;
     ZoomableView*  m_imageView = nullptr;
+    ElaProgressRing* m_progressRing = nullptr;
 
     // QPointer：worker/线程对象在线程结束后会被 deleteLater 自动删除，
     // 用 QPointer 确保删除后成员自动置空，closeEvent 不会访问悬空指针。

@@ -82,6 +82,9 @@ protected:
 
         constexpr int kHotkeyId = 1;
         if (!RegisterHotKey(m_hwnd, kHotkeyId, m_modifiers, m_vk)) {
+            DestroyWindow(m_hwnd);
+            m_hwnd = nullptr;
+            UnregisterClassW(className, GetModuleHandleW(nullptr));
             m_register_result = false;
             m_started_sem.release();
             return;
@@ -135,7 +138,7 @@ private:
     HWND m_hwnd = nullptr;
     UINT m_modifiers = 0;
     UINT m_vk = 0;
-    bool m_register_result = false;
+    std::atomic<bool> m_register_result{false};
     QSemaphore m_started_sem;
     std::atomic<bool> m_stopped{false};
 };

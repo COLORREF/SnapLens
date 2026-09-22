@@ -46,7 +46,7 @@ void TranslateService::run()
 {
     try {
         // 1. OCR 提取文字
-        OcrEngine& engine = OcrEngine::instance();
+        OcrEngine engine; // Each job owns its language configuration and native engine.
 
         QString tessDir = m_tessdataDir;
         if (tessDir.isEmpty()) {
@@ -90,7 +90,7 @@ void TranslateService::run()
 
         // 2. AI 翻译（使用构造时拷贝的配置快照）
         QString apiKey = m_apiKey;
-        if (apiKey.isEmpty()) {
+        if (apiKey.isEmpty() && providerNeedsApiKey(m_provider)) {
             emit error("API Key 未设置，请在设置中配置");
             return;
         }
@@ -238,11 +238,6 @@ void TextTranslateService::run()
     try {
         if (m_sourceText.trimmed().isEmpty()) {
             emit error("翻译内容为空");
-            return;
-        }
-
-        if (m_apiKey.isEmpty()) {
-            emit error("API Key 未设置，请在设置中配置");
             return;
         }
 

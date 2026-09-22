@@ -1,4 +1,5 @@
 #include "ai_client.h"
+#include "providers.h"
 #include "log/log_manager.h"
 
 #include <QEventLoop>
@@ -57,7 +58,8 @@ QJsonObject ApiClient::buildRequestBody(const QString& model,
 
 void ApiClient::setupRequest(QNetworkRequest& req, const QString& apiKey, int timeoutSecs)
 {
-    req.setRawHeader("Authorization", ("Bearer " + apiKey).toUtf8());
+    if (!apiKey.trimmed().isEmpty())
+        req.setRawHeader("Authorization", ("Bearer " + apiKey.trimmed()).toUtf8());
     req.setRawHeader("Content-Type", "application/json");
     req.setRawHeader("Accept", "application/json");
     req.setTransferTimeout(timeoutSecs * 1000);
@@ -146,11 +148,6 @@ ApiClient::ChatResult ApiClient::chatCreate(const QString& apiKey,
     result.errorCode = 0;
 
     // ---- 输入前置检查（对齐 Python core/api_client.py + ai/openai_compat.py）----
-    if (apiKey.trimmed().isEmpty()) {
-        result.errorCode = -1;
-        result.errorMsg = "API Key 未设置，请在设置中配置";
-        return result;
-    }
     if (apiBase.trimmed().isEmpty()) {
         result.errorCode = -1;
         result.errorMsg = "API 地址未配置，请在设置中检查服务商与 API Base";
@@ -174,7 +171,12 @@ ApiClient::ChatResult ApiClient::chatCreate(const QString& apiKey,
         return result;
     }
 
-    QUrl url(apiBase + "/chat/completions");
+    QUrl url = providerEndpoint(apiBase, QStringLiteral("chat/completions"));
+    if (url.isEmpty()) {
+        result.errorCode = -1;
+        result.errorMsg = "API 地址无效，请填写 http:// 或 https:// 开头的接口根地址";
+        return result;
+    }
     QNetworkRequest req(url);
     setupRequest(req, apiKey, timeoutSecs);
 
@@ -275,10 +277,6 @@ int ApiClient::chatCreateStream(const QString& apiKey,
     auto failWith = [&callback](const QString& msg) {
         if (callback) callback(QString(), QString(), true, -1, msg);
     };
-    if (apiKey.trimmed().isEmpty()) {
-        failWith("API Key 未设置，请在设置中配置");
-        return -1;
-    }
     if (apiBase.trimmed().isEmpty()) {
         failWith("API 地址未配置，请在设置中检查服务商与 API Base");
         return -1;
@@ -299,7 +297,11 @@ int ApiClient::chatCreateStream(const QString& apiKey,
         return -1;
     }
 
-    QUrl url(apiBase + "/chat/completions");
+    QUrl url = providerEndpoint(apiBase, QStringLiteral("chat/completions"));
+    if (url.isEmpty()) {
+        failWith("API 地址无效，请填写 http:// 或 https:// 开头的接口根地址");
+        return -1;
+    }
     QNetworkRequest req(url);
     setupRequest(req, apiKey, timeoutSecs);
 
@@ -342,9 +344,9 @@ int ApiClient::chatCreateStream(const QString& apiKey,
             buffer.remove(0, nlIdx + 1);
 
             if (line.isEmpty()) continue;
-            if (!line.startsWith("data: ")) continue;
+            if (!line.startsWith("data:")) continue;
 
-            QByteArray data = line.mid(6); // 跳过 "data: "
+            QByteArray data = line.mid(5).trimmed(); // 跳过 "data: "
             if (data == "[DONE]") continue;
 
             QJsonParseError err;
@@ -420,9 +422,9 @@ int ApiClient::chatCreateStream(const QString& apiKey,
         QByteArray line = buffer.left(nlIdx).trimmed();
         buffer.remove(0, nlIdx + 1);
 
-        if (line.isEmpty() || !line.startsWith("data: ")) continue;
+        if (line.isEmpty() || !line.startsWith("data:")) continue;
 
-        QByteArray data = line.mid(6);
+        QByteArray data = line.mid(5).trimmed();
         if (data == "[DONE]") continue;
 
         QJsonParseError err;
@@ -495,18 +497,18 @@ ApiClient::ModelsResult ApiClient::listModels(const QString& apiKey,
     result.errorCode = 0;
 
     // ---- 输入前置检查（对齐 Python core/api_client.py + ai/native_binding.py）----
-    if (apiKey.trimmed().isEmpty()) {
-        result.errorCode = -1;
-        result.errorMsg = "API Key 未设置，请在设置中配置";
-        return result;
-    }
     if (apiBase.trimmed().isEmpty()) {
         result.errorCode = -1;
         result.errorMsg = "API 地址未配置，请在设置中检查服务商与 API Base";
         return result;
     }
 
-    QUrl url(apiBase + "/models");
+    QUrl url = providerEndpoint(apiBase, QStringLiteral("models"));
+    if (url.isEmpty()) {
+        result.errorCode = -1;
+        result.errorMsg = "API 地址无效，请填写接口根地址";
+        return result;
+    }
     QNetworkRequest req(url);
     setupRequest(req, apiKey, timeoutSecs);
 
@@ -577,12 +579,6 @@ void ApiClient::listModelsAsync(const QString& apiKey, const QString& apiBase,
     result.errorCode = 0;
 
     // ---- 输入前置检查（与同步版一致）----
-    if (apiKey.trimmed().isEmpty()) {
-        result.errorCode = -1;
-        result.errorMsg = "API Key 未设置，请在设置中配置";
-        if (callback) callback(result);
-        return;
-    }
     if (apiBase.trimmed().isEmpty()) {
         result.errorCode = -1;
         result.errorMsg = "API 地址未配置，请在设置中检查服务商与 API Base";
@@ -590,7 +586,13 @@ void ApiClient::listModelsAsync(const QString& apiKey, const QString& apiBase,
         return;
     }
 
-    QUrl url(apiBase + "/models");
+    QUrl url = providerEndpoint(apiBase, QStringLiteral("models"));
+    if (url.isEmpty()) {
+        result.errorCode = -1;
+        result.errorMsg = "API 地址无效，请填写接口根地址";
+        if (callback) callback(result);
+        return;
+    }
     QNetworkRequest req(url);
     setupRequest(req, apiKey, timeoutSecs);
 

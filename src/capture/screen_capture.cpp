@@ -26,6 +26,7 @@ QPixmap CapturedDesktop::crop(const ScreenShot& shot, const QRect& localRect)
         localRect.x() * dpr, localRect.y() * dpr,
         localRect.width() * dpr, localRect.height() * dpr
     ).toAlignedRect().intersected(QRect(QPoint(0, 0), shot.pixmap.size()));
+    if (phys.isEmpty()) return {}; // Qt copy(empty) otherwise copies the whole screen.
     QPixmap out = shot.pixmap.copy(phys);
     out.setDevicePixelRatio(dpr);
     return out;

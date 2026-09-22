@@ -1,7 +1,8 @@
 #ifndef SNAPLENS_TRANSLATE_TRANSLATE_WINDOW_H
 #define SNAPLENS_TRANSLATE_TRANSLATE_WINDOW_H
 
-#include <QWidget>
+#include "ElaWidgetTools.hpp"
+
 #include <QPixmap>
 #include <QString>
 #include <QPointer>
@@ -9,15 +10,15 @@
 class QComboBox;
 class QPushButton;
 class QLabel;
-class QTabWidget;
 class QPlainTextEdit;
 class QSplitter;
+class QStackedWidget;
 class Settings;
 class NotifyManager;
 class TranslateService;
 class ZoomableView;
 
-class TranslateWindow : public QWidget
+class TranslateWindow : public ElaWindow
 {
     Q_OBJECT
 
@@ -58,13 +59,14 @@ private:
     QPushButton*    m_translateBtn = nullptr;
     QPushButton*    m_copyTransBtn = nullptr;
     QPushButton*    m_copyOcrBtn = nullptr;
-    QPushButton*    m_closeBtn = nullptr;
     QLabel*         m_statusLabel = nullptr;
     ZoomableView*   m_imageView = nullptr;
-    QTabWidget*     m_tabWidget = nullptr;
+    ElaPivot*       m_pivot = nullptr;
+    QStackedWidget* m_stack = nullptr;
     QPlainTextEdit* m_transEdit = nullptr;
     QPlainTextEdit* m_ocrEdit = nullptr;
     QPlainTextEdit* m_thinkEdit = nullptr;
+    ElaProgressRing* m_progressRing = nullptr;
 
     // 线程对象通过 finished → deleteLater 自动删除，QPointer 确保删除后
     // 成员自动置空，杜绝 closeEvent/startTranslation 访问悬空指针（use-after-free）。

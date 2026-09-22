@@ -153,10 +153,11 @@ inline const QVector<SettingDef> SETTING_DEFS = {
     {"log_error_enabled",        true},
     // ---- AI 翻译 ----
     {"ai_provider",  "deepseek", validators::oneOf({
-        "deepseek", "openai", "qwen", "kimi", "glm", "hunyuan", "doubao", "qianfan"})},
+        "deepseek", "openai", "qwen", "kimi", "glm", "hunyuan", "doubao", "qianfan", "custom"})},
     {"ai_api_key",          ""},
     {"ai_api_base",         "https://api.deepseek.com/v1"},
     {"ai_model",            ""},  // 模型名称（用户手动输入或通过 API 自动获取）
+    {"ai_custom_models",    ""},  // 自定义服务的候选模型，逗号或换行分隔
     {"ai_target_lang",      "简体中文"},
     {"ai_timeout",          30,     validators::clampInt(5, 120)},
     {"ai_temperature",      0.1,    validators::clampFloat(0.0, 2.0)},
@@ -184,6 +185,9 @@ inline const QVector<SettingDef> SETTING_DEFS = {
     // translate = 翻译模式（启动时显示文本翻译窗口，截图通过热键触发）
     // screenshot = 截图模式（后台静默运行，仅托盘；翻译通过截图工具条或托盘菜单触发）
     {"app_mode", "translate", validators::oneOf({"translate", "screenshot"})},
+    // ---- 外观 ----
+    // system = 跟随系统深浅色；light / dark = 强制指定
+    {"theme_mode", "system", validators::oneOf({"system", "light", "dark"})},
     // ---- 元数据 ----
     {"settings_version", SETTINGS_VERSION},
 };
@@ -264,6 +268,7 @@ inline const QVector<SettingDef> SETTING_DEFS = {
     X(QString, ai_api_key) \
     X(QString, ai_api_base) \
     X(QString, ai_model) \
+    X(QString, ai_custom_models) \
     X(QString, ai_target_lang) \
     X(int, ai_timeout) \
     X(double, ai_temperature) \
@@ -284,6 +289,7 @@ inline const QVector<SettingDef> SETTING_DEFS = {
     X(double, right_panel_ratio) \
     X(double, main_split_ratio) \
     X(QString, app_mode) \
+    X(QString, theme_mode) \
     X(int, settings_version)
 
 // ============================================================================
@@ -302,7 +308,8 @@ public:
     void updateFromDict(const QJsonObject& data);
 
     // 持久化
-    void save() const;
+    bool save() const;
+    void setPersistenceEnabled(bool enabled) { m_persistenceEnabled = enabled; }
 
     // 工厂方法
     static QJsonObject defaultsDict();
@@ -316,6 +323,9 @@ public:
 
     // 特殊字段：动态默认值
     QString save_dir;
+
+private:
+    bool m_persistenceEnabled = true;
 };
 
 #endif // SNAPLENS_SETTINGS_H

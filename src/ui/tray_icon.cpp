@@ -5,63 +5,60 @@
 #include <QPixmap>
 #include <QApplication>
 #include <QStyle>
+#include "ElaWidgetTools.hpp"
+#include "snapkit.h"
 
 static QIcon createTrayIcon()
 {
-    // Programmatically draw a tray icon: blue rounded rect + "截" character
-    QPixmap pix(32, 32);
-    pix.fill(Qt::transparent);
-    QPainter painter(&pix);
-    painter.setRenderHint(QPainter::Antialiasing);
-    // Blue rounded background
-    painter.setBrush(QColor(24, 144, 255));
-    painter.setPen(Qt::NoPen);
-    painter.drawRoundedRect(2, 2, 28, 28, 6, 6);
-    // White "截" character
-    painter.setPen(Qt::white);
-    QFont font("Microsoft YaHei", 16, QFont::Bold);
-    painter.setFont(font);
-    painter.drawText(QRect(2, 2, 28, 28), Qt::AlignCenter, "截");
-    painter.end();
-    return QIcon(pix);
+    return QIcon(SnapUi::makeAppIcon(32));
 }
 
 TrayIcon::TrayIcon(QObject* parent)
     : QSystemTrayIcon(parent)
 {
     setIcon(createTrayIcon());
-    setToolTip("SnapLens 截图工具");
+    setToolTip("SnapLens 工具箱");
 
-    m_menu = new QMenu();
+    auto* fluentMenu = new ElaMenu();
+    fluentMenu->setMenuItemHeight(34);
+    m_menu = fluentMenu;
 
-    m_snipAction = m_menu->addAction("截图");
+    m_snipAction = fluentMenu->addElaIconAction(ElaIconType::CameraViewfinder, "截图");
     connect(m_snipAction, &QAction::triggered, this, &TrayIcon::snipRequested);
 
     m_menu->addSeparator();
 
-    m_translateAction = m_menu->addAction("文本翻译");
+    m_translateAction = fluentMenu->addElaIconAction(ElaIconType::House, "打开工具箱");
     connect(m_translateAction, &QAction::triggered, this, &TrayIcon::translateRequested);
 
-    m_modeAction = m_menu->addAction("切换模式");
+    m_modeAction = fluentMenu->addElaIconAction(ElaIconType::ArrowRightArrowLeft, "切换模式");
     connect(m_modeAction, &QAction::triggered, this, &TrayIcon::modeSwitchRequested);
 
     m_menu->addSeparator();
 
-    QAction* settingsAction = m_menu->addAction("设置…");
+    QAction* settingsAction = fluentMenu->addElaIconAction(ElaIconType::GearComplex, "设置…");
     connect(settingsAction, &QAction::triggered, this, &TrayIcon::settingsRequested);
 
-    QAction* quitAction = m_menu->addAction("退出");
+    QAction* quitAction = fluentMenu->addElaIconAction(ElaIconType::ArrowRightFromBracket, "退出");
     connect(quitAction, &QAction::triggered, this, &TrayIcon::quitRequested);
 
     setContextMenu(m_menu);
+
+    connect(this, &QSystemTrayIcon::activated, this,
+            [this](QSystemTrayIcon::ActivationReason reason) {
+        if (reason == QSystemTrayIcon::DoubleClick)
+            emit translateRequested();
+        else if (reason == QSystemTrayIcon::MiddleClick)
+            emit snipRequested();
+    });
 }
 
 void TrayIcon::setMode(const QString& mode)
 {
     if (mode == "screenshot") {
-        m_modeAction->setText("切换至翻译模式");
+        m_modeAction->setText("启动时打开工具箱");
     } else {
-        m_modeAction->setText("切换至截图模式");
+        m_modeAction->setText("启动时后台运行");
     }
 }
 

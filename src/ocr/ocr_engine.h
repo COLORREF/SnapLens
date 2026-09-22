@@ -17,6 +17,8 @@
 
 class OcrEngine {
 public:
+    OcrEngine() = default;
+    ~OcrEngine();
     static OcrEngine& instance();
     
     // Initialize engine with language data
@@ -44,14 +46,13 @@ public:
     static QString findTessdataDir();
     
 private:
-    OcrEngine() = default;
-    ~OcrEngine();
     OcrEngine(const OcrEngine&) = delete;
     OcrEngine& operator=(const OcrEngine&) = delete;
     
     TessBaseAPI* m_api = nullptr;
     bool m_initialized = false;
     QString m_currentLanguage;
+    QString m_currentDirectory;
     
     mutable QMutex m_mutex;
 };
