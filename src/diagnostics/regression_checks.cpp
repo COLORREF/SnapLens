@@ -163,6 +163,23 @@ int runRegressionChecks(QApplication& app)
         // 新增的 AI 参数（思考 / 推理强度 / 停止序列 / 流式用量）应能保存
         // 并按服务商能力显隐。显隐判断需要 AI 页处于当前页，否则整页被判定为隐藏。
         window.settingsView()->selectCategory("ai");
+        // 细粒度参数收在「高级设置」折叠区里，显隐断言前先展开。
+        auto* advanced = window.settingsView()->findChild<SnapUi::AdvancedSection*>("aiAdvancedSection");
+        check(advanced != nullptr, "AI advanced section is missing");
+        check(advanced && !advanced->isExpanded(), "advanced section should be collapsed by default");
+        if (advanced) {
+            // 点击标题行应展开（整行热区，而非仅小箭头）。
+            if (auto* header = advanced->findChild<QWidget*>("advancedHeader")) {
+                QMouseEvent press(QEvent::MouseButtonPress, QPointF(20, 10),
+                                  Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QMouseEvent release(QEvent::MouseButtonRelease, QPointF(20, 10),
+                                    Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(header, &press);
+                QApplication::sendEvent(header, &release);
+                check(advanced->isExpanded(), "clicking the header should expand the section");
+            }
+            advanced->setExpanded(true);
+        }
         auto* doSample = window.settingsView()->findChild<QComboBox*>("aiDoSampleCombo");
         auto* thinking = window.settingsView()->findChild<QComboBox*>("aiThinkingCombo");
         auto* effort = window.settingsView()->findChild<QComboBox*>("aiEffortCombo");

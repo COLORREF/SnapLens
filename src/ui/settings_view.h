@@ -265,6 +265,7 @@ private:
     QSpinBox*          m_aiMaxTokens       = nullptr;
     QWidget*           m_aiMaxTokensCard   = nullptr;   // 输出上限行（提示字段名/上限）
     QWidget*           m_aiDoSampleCard    = nullptr;   // 采样总开关行（仅 GLM do_sample）
+    SnapUi::AdvancedSection* m_aiAdvanced  = nullptr;   // 高级设置折叠区（默认收起）
     QSlider*           m_aiTopP            = nullptr;
     QSlider*           m_aiFrequencyPenalty = nullptr;
     QSlider*           m_aiPresencePenalty = nullptr;

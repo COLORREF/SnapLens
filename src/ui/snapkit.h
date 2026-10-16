@@ -23,6 +23,7 @@
 #include <functional>
 
 class QHBoxLayout;
+class QEvent;
 class QVBoxLayout;
 class QLayout;
 class QPaintEvent;
@@ -321,6 +322,39 @@ private:
 // ---------------------------------------------------------------------------
 // 设置页容器
 // ---------------------------------------------------------------------------
+
+/// 高级设置折叠区：默认收起，把 temperature/top_p/惩罚项等细粒度参数
+/// 收进一行标题之后，让普通用户不必面对这些选项。展开状态不持久化（每次进入
+/// 页面都收起），符合「默认不打扰」的预期。
+class AdvancedSection : public QWidget
+{
+    Q_OBJECT
+public:
+    explicit AdvancedSection(const QString& title, const QString& description = {},
+                             QWidget* parent = nullptr);
+
+    /// 向折叠区内部追加一行设置（收起时不显示）。
+    void addRow(QWidget* row);
+    bool isExpanded() const { return m_expanded; }
+    /// 展开/收起；用于自动化测试或从别处联动。
+    void setExpanded(bool expanded);
+
+signals:
+    void expandedChanged(bool expanded);
+
+protected:
+    /// 整行可点：QWidget 没有 clicked 信号，这里接管标题行的鼠标事件。
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
+private:
+    void rebuildBodyVisibility();
+
+    QWidget*     m_header = nullptr;
+    QWidget*     m_body = nullptr;
+    QVBoxLayout* m_bodyLayout = nullptr;
+    ElaText*     m_chevron = nullptr;
+    bool         m_expanded = false;
+};
 
 /// 可滚动的设置页：内部按「分区标题 + 设置行」组织，统一页边距与行距。
 class SettingsPage : public QWidget

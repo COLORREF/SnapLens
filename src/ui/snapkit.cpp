@@ -5,6 +5,7 @@
 #include <QBoxLayout>
 #include <QComboBox>
 #include <QEnterEvent>
+#include <QEvent>
 #include <QGuiApplication>
 #include <QKeySequence>
 #include <QLineEdit>
@@ -1006,6 +1007,94 @@ SettingsPage::SettingsPage(const QString& title, const QString& subtitle, QWidge
 
     m_scroll->setWidget(content);
     outer->addWidget(m_scroll);
+}
+
+// ---------------------------------------------------------------------------
+// AdvancedSection — 高级设置折叠区
+// ---------------------------------------------------------------------------
+
+AdvancedSection::AdvancedSection(const QString& title, const QString& description,
+                                 QWidget* parent)
+    : QWidget(parent)
+{
+    auto* root = new QVBoxLayout(this);
+    root->setContentsMargins(0, 0, 0, 0);
+    root->setSpacing(0);
+
+    // 头部整行可点：箭头 + 标题 + 说明，保持与普通分区标题相近的视觉重量。
+    m_header = new QWidget(this);
+    m_header->setObjectName(QStringLiteral("advancedHeader"));
+    m_header->setCursor(Qt::PointingHandCursor);
+    m_header->setAttribute(Qt::WA_Hover, true);
+    auto* headerLayout = new QVBoxLayout(m_header);
+    headerLayout->setContentsMargins(0, Dim::SectionGap - Dim::RowGap, 0, 8);
+    headerLayout->setSpacing(2);
+
+    auto* titleRow = new QHBoxLayout();
+    titleRow->setContentsMargins(0, 0, 0, 0);
+    titleRow->setSpacing(8);
+
+    m_chevron = iconGlyph(ElaIconType::ChevronRight, 12, m_header);
+    titleRow->addWidget(m_chevron);
+    titleRow->addWidget(sectionHeader(title, m_header));
+    titleRow->addStretch();
+    headerLayout->addLayout(titleRow);
+
+    if (!description.isEmpty()) {
+        auto* desc = detailText(description, m_header);
+        // 与标题文字左对齐（iconGlyph 固定宽 24）。
+        auto* descRow = new QHBoxLayout();
+        descRow->setContentsMargins(32, 0, 0, 0);
+        descRow->addWidget(desc);
+        headerLayout->addLayout(descRow);
+    }
+    root->addWidget(m_header);
+
+    m_body = new QWidget(this);
+    m_bodyLayout = new QVBoxLayout(m_body);
+    m_bodyLayout->setContentsMargins(0, 0, 0, 0);
+    m_bodyLayout->setSpacing(0);
+    m_body->setVisible(false);
+    root->addWidget(m_body);
+
+    // 用事件过滤器接管整行的点击（QWidget 本身没有 clicked 信号）。
+    m_header->installEventFilter(this);
+}
+
+bool AdvancedSection::eventFilter(QObject* watched, QEvent* event)
+{
+    if (watched == m_header) {
+        if (event->type() == QEvent::MouseButtonRelease) {
+            auto* me = static_cast<QMouseEvent*>(event);
+            if (me->button() == Qt::LeftButton) {
+                setExpanded(!m_expanded);
+                return true;
+            }
+        }
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
+void AdvancedSection::addRow(QWidget* row)
+{
+    if (!row) return;
+    row->setParent(m_body);
+    m_bodyLayout->addWidget(row);
+}
+
+void AdvancedSection::setExpanded(bool expanded)
+{
+    if (m_expanded == expanded) return;
+    m_expanded = expanded;
+    m_chevron->setElaIcon(expanded ? ElaIconType::ChevronDown
+                                   : ElaIconType::ChevronRight);
+    rebuildBodyVisibility();
+    Q_EMIT expandedChanged(m_expanded);
+}
+
+void AdvancedSection::rebuildBodyVisibility()
+{
+    m_body->setVisible(m_expanded);
 }
 
 QWidget* SettingsPage::addSection(const QString& title, const QString& description)

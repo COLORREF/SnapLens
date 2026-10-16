@@ -1128,66 +1128,8 @@ QWidget* SettingsView::buildAiSettingsTab()
     hintLayout->addWidget(m_aiParamHint);
     page->addBlock(m_aiParamHintRow, 0);
 
-    page->addSection("采样参数",
-                     "只发送该服务商真正支持的字段；未支持的参数会自动隐藏并保留配置值。");
-
-    auto* doSampleCard = new SettingsCard(
-        "启用采样", "关闭后服务商忽略 temperature / top_p，输出更确定（GLM 的 do_sample）", page);
-    m_aiDoSampleCombo = new ElaComboBox(doSampleCard);
-    m_aiDoSampleCombo->setObjectName(QStringLiteral("aiDoSampleCombo"));
-    m_aiDoSampleCombo->addItem("自动（不发送，用服务商默认）", "auto");
-    m_aiDoSampleCombo->addItem("开启采样", "on");
-    m_aiDoSampleCombo->addItem("关闭采样（更确定）", "off");
-    m_aiDoSampleCombo->setMinimumWidth(220);
-    {
-        const int idx = m_aiDoSampleCombo->findData(m_settings->ai_do_sample);
-        if (idx >= 0) m_aiDoSampleCombo->setCurrentIndex(idx);
-    }
-    doSampleCard->addControl(m_aiDoSampleCombo);
-    page->addBlock(doSampleCard);
-    m_aiDoSampleCard = doSampleCard;
-
-    auto* tempCard = decimalSliderRow(
-        "温度 Temperature",
-        "控制输出随机性；越低越稳定。翻译建议 ≤ 0.3（区间随服务商调整）",
-        m_settings->ai_temperature, 0.0, 2.0, 2, QString(), &m_aiTemperature, page);
-    page->addBlock(tempCard);
-
-    auto* topPCard = decimalSliderRow(
-        "Top P（核采样）",
-        "与温度二选一调整；翻译建议 1.0（区间随服务商调整）",
-        m_settings->ai_top_p, 0.01, 1.0, 2, QString(), &m_aiTopP, page);
-    page->addBlock(topPCard);
-
-    auto* freqCard = decimalSliderRow(
-        "频率惩罚 Frequency Penalty",
-        "正值抑制重复用词；0 为不惩罚",
-        m_settings->ai_frequency_penalty, -2.0, 2.0, 2, QString(),
-        &m_aiFrequencyPenalty, page);
-    page->addBlock(freqCard);
-
-    auto* presCard = decimalSliderRow(
-        "存在惩罚 Presence Penalty",
-        "正值鼓励引入新内容；0 为不惩罚",
-        m_settings->ai_presence_penalty, -2.0, 2.0, 2, QString(),
-        &m_aiPresencePenalty, page);
-    page->addBlock(presCard);
-
-    auto* seedCard = new SettingsCard("随机种子 Seed",
-                                      "相同种子尽量复现相同结果；0 为不指定（随机）",
-                                      page);
-    m_aiSeedEdit = new ElaLineEdit(seedCard);
-    m_aiSeedEdit->setText(QString::number(m_settings->ai_seed));
-    m_aiSeedEdit->setPlaceholderText("0（默认随机）");
-    m_aiSeedEdit->setFixedWidth(120);
-    seedCard->addControl(m_aiSeedEdit);
-    page->addBlock(seedCard);
-
-    m_aiTemperatureRows = {tempCard, topPCard};
-    m_aiPenaltyRows = {freqCard, presCard};
-    m_aiSeedRows = {seedCard};
-
-    page->addSection("输出与停止", "输出上限字段名与上限随服务商不同，界面按当前服务商自动调整。");
+    // 常用参数：普通用户真正会调的两项，直接平铺。
+    page->addSection("常用参数", "输出长度与等待时间；上限随服务商自动调整。");
 
     auto* maxTokensCard = spinRow(
         "最大输出 Token",
@@ -1201,25 +1143,6 @@ QWidget* SettingsView::buildAiSettingsTab()
                                 m_settings->ai_timeout, 5, 120, 5, " 秒",
                                 &m_aiTimeout, page);
     page->addBlock(timeoutCard);
-
-    auto* stopPanel = new PanelCard("停止序列",
-                                    "每行一个，最多 4 项；模型遇到这些字符串即停止生成", page);
-    m_aiStopEdit = new ElaPlainTextEdit(stopPanel);
-    m_aiStopEdit->setObjectName(QStringLiteral("aiStopEdit"));
-    m_aiStopEdit->setPlainText(m_settings->ai_stop);
-    m_aiStopEdit->setPlaceholderText("每行一个停止词，例如：\n###\n</answer>");
-    m_aiStopEdit->setMinimumHeight(84);
-    stopPanel->setContent(m_aiStopEdit);
-    page->addBlock(stopPanel, Dim::SectionGap - Dim::RowGap);
-    m_aiStopRows = {stopPanel};
-
-    auto* streamUsageCard = toggleRow(
-        "流式请求附带用量统计",
-        "在流式响应末尾返回 token 用量（stream_options.include_usage）",
-        m_settings->ai_stream_usage, &m_aiStreamUsage, page);
-    if (m_aiStreamUsage) m_aiStreamUsage->setObjectName(QStringLiteral("aiStreamUsageToggle"));
-    page->addBlock(streamUsageCard);
-    m_aiStreamUsageRows = {streamUsageCard};
 
     page->addSection("思考与推理",
                      "支持思考参数的服务商可控制是否推理与推理强度；强制思考的模型会隐藏开关。");
@@ -1249,7 +1172,90 @@ QWidget* SettingsView::buildAiSettingsTab()
     page->addBlock(effortCard);
     m_aiEffortCard = effortCard;
 
+    // 高级设置：采样、惩罚项、种子、停止序列等细粒度参数默认收起，
+    // 普通用户无需关心；留「自动」即不发送，交给服务商默认值。
+    m_aiAdvanced = new AdvancedSection(
+        "高级设置",
+        "采样、惩罚项与停止序列等细粒度参数。留「自动」即不发送，使用服务商默认值；"
+        "不适用的选项会按当前服务商自动隐藏。",
+        page);
+    m_aiAdvanced->setObjectName(QStringLiteral("aiAdvancedSection"));
+    page->addBlock(m_aiAdvanced);
 
+    auto* doSampleCard = new SettingsCard(
+        "启用采样", "关闭后服务商忽略 temperature / top_p，输出更确定（GLM 的 do_sample）", m_aiAdvanced);
+    m_aiDoSampleCombo = new ElaComboBox(doSampleCard);
+    m_aiDoSampleCombo->setObjectName(QStringLiteral("aiDoSampleCombo"));
+    m_aiDoSampleCombo->addItem("自动（不发送，用服务商默认）", "auto");
+    m_aiDoSampleCombo->addItem("开启采样", "on");
+    m_aiDoSampleCombo->addItem("关闭采样（更确定）", "off");
+    m_aiDoSampleCombo->setMinimumWidth(220);
+    {
+        const int idx = m_aiDoSampleCombo->findData(m_settings->ai_do_sample);
+        if (idx >= 0) m_aiDoSampleCombo->setCurrentIndex(idx);
+    }
+    doSampleCard->addControl(m_aiDoSampleCombo);
+    m_aiAdvanced->addRow(doSampleCard);
+    m_aiDoSampleCard = doSampleCard;
+
+    auto* tempCard = decimalSliderRow(
+        "温度 Temperature",
+        "控制输出随机性；越低越稳定。翻译建议 ≤ 0.3（区间随服务商调整）",
+        m_settings->ai_temperature, 0.0, 2.0, 2, QString(), &m_aiTemperature, m_aiAdvanced);
+    m_aiAdvanced->addRow(tempCard);
+
+    auto* topPCard = decimalSliderRow(
+        "Top P（核采样）",
+        "与温度二选一调整；翻译建议 1.0（区间随服务商调整）",
+        m_settings->ai_top_p, 0.01, 1.0, 2, QString(), &m_aiTopP, m_aiAdvanced);
+    m_aiAdvanced->addRow(topPCard);
+
+    auto* freqCard = decimalSliderRow(
+        "频率惩罚 Frequency Penalty",
+        "正值抑制重复用词；0 为不惩罚",
+        m_settings->ai_frequency_penalty, -2.0, 2.0, 2, QString(),
+        &m_aiFrequencyPenalty, m_aiAdvanced);
+    m_aiAdvanced->addRow(freqCard);
+
+    auto* presCard = decimalSliderRow(
+        "存在惩罚 Presence Penalty",
+        "正值鼓励引入新内容；0 为不惩罚",
+        m_settings->ai_presence_penalty, -2.0, 2.0, 2, QString(),
+        &m_aiPresencePenalty, m_aiAdvanced);
+    m_aiAdvanced->addRow(presCard);
+
+    auto* seedCard = new SettingsCard("随机种子 Seed",
+                                      "相同种子尽量复现相同结果；0 为不指定（随机）",
+                                      m_aiAdvanced);
+    m_aiSeedEdit = new ElaLineEdit(seedCard);
+    m_aiSeedEdit->setText(QString::number(m_settings->ai_seed));
+    m_aiSeedEdit->setPlaceholderText("0（默认随机）");
+    m_aiSeedEdit->setFixedWidth(120);
+    seedCard->addControl(m_aiSeedEdit);
+    m_aiAdvanced->addRow(seedCard);
+
+    auto* stopPanel = new PanelCard("停止序列",
+                                    "每行一个，最多 4 项；模型遇到这些字符串即停止生成", m_aiAdvanced);
+    m_aiStopEdit = new ElaPlainTextEdit(stopPanel);
+    m_aiStopEdit->setObjectName(QStringLiteral("aiStopEdit"));
+    m_aiStopEdit->setPlainText(m_settings->ai_stop);
+    m_aiStopEdit->setPlaceholderText("每行一个停止词，例如：\n###\n</answer>");
+    m_aiStopEdit->setMinimumHeight(84);
+    stopPanel->setContent(m_aiStopEdit);
+    m_aiAdvanced->addRow(stopPanel);
+    m_aiStopRows = {stopPanel};
+
+    auto* streamUsageCard = toggleRow(
+        "流式请求附带用量统计",
+        "在流式响应末尾返回 token 用量（stream_options.include_usage）",
+        m_settings->ai_stream_usage, &m_aiStreamUsage, m_aiAdvanced);
+    if (m_aiStreamUsage) m_aiStreamUsage->setObjectName(QStringLiteral("aiStreamUsageToggle"));
+    m_aiAdvanced->addRow(streamUsageCard);
+    m_aiStreamUsageRows = {streamUsageCard};
+
+    m_aiTemperatureRows = {tempCard, topPCard};
+    m_aiPenaltyRows = {freqCard, presCard};
+    m_aiSeedRows = {seedCard};
 
     appendPageReset(page, "ai_settings", "AI 设置页面");
     refreshAiPage();
