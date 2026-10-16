@@ -8,4 +8,8 @@
         <file alias="Translate">icons/Translate.svg</file>
         <file alias="Ocr">icons/Ocr.svg</file>
     </qresource>
+    <qresource prefix="/licenses">
+        <file alias="spdlog">licenses/spdlog.txt</file>
+        <file alias="fmt">licenses/fmt.txt</file>
+    </qresource>
 </RCC>

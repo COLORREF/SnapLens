@@ -1,7 +1,8 @@
 #ifndef SNAPLENS_OCR_OCR_WINDOW_H
 #define SNAPLENS_OCR_OCR_WINDOW_H
 
-#include <QWidget>
+#include "ElaWidgetTools.hpp"
+
 #include <QImage>
 #include <QPixmap>
 #include <QString>
@@ -15,7 +16,7 @@ class Settings;
 class NotifyManager;
 class ZoomableView;
 
-// OcrWorker runs OCR in a background thread to avoid blocking the UI
+/** @brief 后台识别任务，持有图像与配置快照，不读取界面状态。 */
 class OcrWorker : public QObject {
     Q_OBJECT
 public:
@@ -36,11 +37,13 @@ private:
     QString m_tessdataDir;
 };
 
-class OcrWindow : public QWidget {
+/** @brief OCR 结果窗口；销毁时分离尚未完成的任务，保持界面响应。 */
+class OcrWindow : public ElaWindow {
     Q_OBJECT
 public:
     explicit OcrWindow(const QPixmap& pixmap, Settings* settings,
                        NotifyManager* notifyManager = nullptr, QWidget* parent = nullptr);
+    ~OcrWindow() override;
 
     // 是否有 OCR 任务正在运行（供设置保存时"下次生效"提示检测）
     bool isBusy() const;
@@ -59,6 +62,8 @@ private slots:
 private:
     void buildUi();
     void startOcr();
+    /** @brief 断开结果回写并转移运行中线程的清理责任；允许重复调用。 */
+    void releaseWorker();
 
     QPixmap        m_pixmap;
     Settings*      m_settings = nullptr;
@@ -68,11 +73,12 @@ private:
     QPlainTextEdit* m_textEdit = nullptr;
     QLabel*        m_statusLabel = nullptr;
     ZoomableView*  m_imageView = nullptr;
+    ElaProgressRing* m_progressRing = nullptr;
 
-    // QPointer：worker/线程对象在线程结束后会被 deleteLater 自动删除，
-    // 用 QPointer 确保删除后成员自动置空，closeEvent 不会访问悬空指针。
+    // 线程对象在 GUI 线程删除。worker 在后台删除，仅保留连接句柄以安全断开。
     QPointer<QThread>   m_workerThread;
-    QPointer<OcrWorker> m_worker;
+    QMetaObject::Connection m_resultConnection;
+    QMetaObject::Connection m_errorConnection;
 };
 
 #endif // SNAPLENS_OCR_OCR_WINDOW_H

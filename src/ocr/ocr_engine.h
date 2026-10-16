@@ -15,19 +15,23 @@
 #undef FALSE
 #endif
 
+/** @brief 拥有一个 Tesseract 实例；每个识别任务独立创建，成员操作由互斥锁保护。 */
 class OcrEngine {
 public:
-    static OcrEngine& instance();
+    OcrEngine() = default;
+    ~OcrEngine();
     
-    // Initialize engine with language data
-    // tessdataDir: path to tessdata directory (containing .traineddata files)
-    // language: Tesseract language codes (+ separated, e.g. "chi_sim+eng")
+    /** @brief 加载语言模型；目录和语言均相同时复用已初始化的引擎。
+     * @param tessdataDir 包含 .traineddata 的目录。
+     * @param language 以 + 分隔的语言代码，如 chi_sim+eng。
+     * @return 模型是否成功加载。
+     */
     bool init(const QString& tessdataDir, const QString& language);
     
     void shutdown();
     bool isInitialized() const;
     
-    // Extract text from raw pixel data (RGB888). Thread-safe.
+    /** @brief 同步识别像素数据；调用期间数据必须保持有效，失败时返回空字符串。 */
     QString extractText(const unsigned char* imageData, int width, int height,
                         int bytesPerPixel, int bytesPerLine);
     
@@ -44,14 +48,13 @@ public:
     static QString findTessdataDir();
     
 private:
-    OcrEngine() = default;
-    ~OcrEngine();
     OcrEngine(const OcrEngine&) = delete;
     OcrEngine& operator=(const OcrEngine&) = delete;
     
     TessBaseAPI* m_api = nullptr;
     bool m_initialized = false;
     QString m_currentLanguage;
+    QString m_currentDirectory;
     
     mutable QMutex m_mutex;
 };

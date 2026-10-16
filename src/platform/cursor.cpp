@@ -30,6 +30,11 @@ void Win32CursorProvider::getPos(int &x, int &y)
 // Win32ClipCursorProvider
 // ============================================================================
 
+bool Win32CursorProvider::setPos(int x, int y)
+{
+    return SetCursorPos(x, y) != FALSE;
+}
+
 Win32ClipCursorProvider::Win32ClipCursorProvider(QObject *parent)
     : IClipCursorProvider(parent)
 {

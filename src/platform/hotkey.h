@@ -14,7 +14,9 @@
 
 #include "platform_base.h"
 
-// Win32 全局热键实现（RegisterHotKey + 独立线程消息窗）
+class HotkeyThread;
+
+/** @brief 用独立 Win32 消息线程注册全局热键，激活信号排队送回所属线程。 */
 class Win32HotkeyProvider : public IHotkeyProvider
 {
     Q_OBJECT
@@ -31,7 +33,6 @@ private:
     static UINT qt_modifiers_to_win32(Qt::KeyboardModifiers modifiers);
     static UINT qt_key_to_vk(Qt::Key key);
 
-    class HotkeyThread;
     HotkeyThread* m_thread = nullptr;
     bool m_registered = false;
 };

@@ -21,6 +21,7 @@ public:
     explicit Win32CursorProvider(QObject *parent = nullptr);
 
     void getPos(int &x, int &y) override;
+    bool setPos(int x, int y) override;
 };
 
 // Win32 光标范围限制实现（ClipCursor）

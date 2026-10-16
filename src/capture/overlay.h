@@ -32,6 +32,7 @@ public:
                 QWidget *parent = nullptr);
 
     void clearSelection();
+    void syncCursorPosition();
 
     // 公开数据（SnipSession 需要访问）
     ScreenShot m_shot;
@@ -41,6 +42,7 @@ signals:
     void regionSelected(SnipOverlay *overlay, QRect rect);
     void cancelled();
     void actionChosen(const QString &action);
+    void cursorNudged();
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -50,11 +52,12 @@ protected:
     void mouseDoubleClickEvent(QMouseEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
+    void keyReleaseEvent(QKeyEvent *event) override;
 
 private:
     // ---- 坐标换算 ----
     qreal dpr() const;
-    void  localToPhys(int lx, int ly, double &px, double &py) const;
+    void  localToPhys(qreal lx, qreal ly, double &px, double &py) const;
     void  cursorPixmapPos(int &px, int &py) const;
     QRectF physToLocal(int left, int top, int right, int bottom) const;
 
@@ -70,16 +73,20 @@ private:
     void drawIdleOverlays(QPainter &painter);
     void drawHint(QPainter &painter);
     void drawSizeLabel(QPainter &painter, const QRectF &sel);
-    void drawCrosshairLines(QPainter &painter, int cx, int cy);
+    void drawCrosshairLines(QPainter &painter, qreal cx, qreal cy);
+    bool moveCursorWithKey(QKeyEvent* event);
 
     // ---- 信息标签 ----
-    void drawInfoLabel(QPainter &painter, int cx, int cy, int gap = 12);
+    void drawInfoLabel(QPainter &painter, qreal cx, qreal cy, int gap = 12);
     void drawInfoLabelRects(QPainter &painter,
                             const QString &coord, const QString &color,
                             QPointF coordPos, QPointF colorPos,
-                            QSizeF coordSize, QSizeF colorSize);
+                            QSizeF coordSize, QSizeF colorSize,
+                            QPointF hintPos, QSizeF hintSize);
     QString coordText() const;
     QString colorText() const;
+    QString colorShortcutText() const;
+    QSizeF colorLabelSize(const QFontMetrics& metrics, const QString& color) const;
     QColor pixelColor(int px, int py) const;
     QString formatColorText(int r, int g, int b) const;
     QString formatColorCopy(int r, int g, int b) const;
@@ -99,8 +106,8 @@ private:
         QString coordText, colorText;
         double zoomLabelH = 0;
     };
-    void drawMagnifierInline(QPainter &painter, int cx, int cy);
-    MgFrame prepareMgFrame(int cx, int cy);
+    void drawMagnifierInline(QPainter &painter, qreal cx, qreal cy);
+    MgFrame prepareMgFrame(qreal cx, qreal cy);
     void drawMgPixels(QPainter &painter, const MgFrame &f);
     void drawMgOverlays(QPainter &painter, const MgFrame &f);
     void drawMgLabels(QPainter &painter, const MgFrame &f);
@@ -122,7 +129,7 @@ private:
     // ---- 状态 ----
     State  m_state = Idle;
     QPoint m_anchor;
-    QPoint m_cursor;
+    QPointF m_cursor;
     QRect  m_selection;
     QRectF m_hover;
     SnipToolbar     *m_toolbar = nullptr;
@@ -131,6 +138,9 @@ private:
     QPointF m_mgPos{-1, -1};       // current animated mag position
     QPointF m_coordPos{-1, -1};    // current animated coord label pos
     QPointF m_colorPos{-1, -1};    // current animated color label pos
+    QPointF m_hintPos{-1, -1};
+    QPointF m_hintTarget;
+    QSizeF m_hintSize;
     QPointF m_coordTarget;         // target coord label pos
     QPointF m_colorTarget;         // target color label pos
     QSizeF  m_coordSize;           // coord label size
@@ -150,6 +160,8 @@ private:
     int    m_crosshairThickness = 1;
     bool   m_crosshairInvert = true;
     bool   m_cursorEnabled = false;
+    bool m_cursorKeyboardEnabled = true;
+    QString m_cursorKeyboardMode = QStringLiteral("arrows");
     // 放大镜
     bool   m_magnifierEnabled = true;
     double m_magnifierZoom = 4.0;
@@ -174,14 +186,17 @@ private:
     QString m_coordLabelTextColorStr = QStringLiteral("#FFFFFF");
     int    m_coordLabelTextAlpha = 100;
     QString m_coordLabelBgColorStr = QStringLiteral("#000000");
-    int    m_coordLabelBgAlpha = 100;
+    int    m_coordLabelBgAlpha = 67;
     bool   m_colorLabelEnabled = true;
     QString m_colorLabelTextColorStr = QStringLiteral("#FFFFFF");
     int    m_colorLabelTextAlpha = 100;
     QString m_colorLabelBgColorStr = QStringLiteral("#000000");
-    int    m_colorLabelBgAlpha = 100;
+    int    m_colorLabelBgAlpha = 67;
+    bool m_colorSwatchEnabled = true;
+    QString m_colorFormatKey = QStringLiteral("Shift");
     QString m_colorFormat = QStringLiteral("rgb");
     QString m_copyColorKey = QStringLiteral("C");
+    bool m_colorShiftPending = false;
     bool   m_copyHexPrefix = true;
     bool   m_copyRgbPrefix = true;
 

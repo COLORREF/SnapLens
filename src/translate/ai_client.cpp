@@ -1,4 +1,5 @@
 #include "ai_client.h"
+#include "providers.h"
 #include "log/log_manager.h"
 
 #include <QEventLoop>
@@ -57,7 +58,8 @@ QJsonObject ApiClient::buildRequestBody(const QString& model,
 
 void ApiClient::setupRequest(QNetworkRequest& req, const QString& apiKey, int timeoutSecs)
 {
-    req.setRawHeader("Authorization", ("Bearer " + apiKey).toUtf8());
+    if (!apiKey.trimmed().isEmpty())
+        req.setRawHeader("Authorization", ("Bearer " + apiKey.trimmed()).toUtf8());
     req.setRawHeader("Content-Type", "application/json");
     req.setRawHeader("Accept", "application/json");
     req.setTransferTimeout(timeoutSecs * 1000);
@@ -112,8 +114,12 @@ int ApiClient::runEventLoop(QNetworkReply* reply, int timeoutSecs, std::atomic<i
         cancelTimer.start();
     }
 
+    if (cancelFlag && cancelFlag->load(std::memory_order_relaxed)) {
+        reply->abort();
+        return -3;
+    }
     timer.start(timeoutSecs * 1000);
-    loop.exec();
+    if (!reply->isFinished()) loop.exec();
 
     timer.stop();
     if (cancelFlag) cancelTimer.stop();
@@ -145,12 +151,7 @@ ApiClient::ChatResult ApiClient::chatCreate(const QString& apiKey,
     ChatResult result;
     result.errorCode = 0;
 
-    // ---- 输入前置检查（对齐 Python core/api_client.py + ai/openai_compat.py）----
-    if (apiKey.trimmed().isEmpty()) {
-        result.errorCode = -1;
-        result.errorMsg = "API Key 未设置，请在设置中配置";
-        return result;
-    }
+    // 在发起网络请求前验证配置和消息。
     if (apiBase.trimmed().isEmpty()) {
         result.errorCode = -1;
         result.errorMsg = "API 地址未配置，请在设置中检查服务商与 API Base";
@@ -174,7 +175,12 @@ ApiClient::ChatResult ApiClient::chatCreate(const QString& apiKey,
         return result;
     }
 
-    QUrl url(apiBase + "/chat/completions");
+    QUrl url = providerEndpoint(apiBase, QStringLiteral("chat/completions"));
+    if (url.isEmpty()) {
+        result.errorCode = -1;
+        result.errorMsg = "API 地址无效，请填写 http:// 或 https:// 开头的接口根地址";
+        return result;
+    }
     QNetworkRequest req(url);
     setupRequest(req, apiKey, timeoutSecs);
 
@@ -271,14 +277,10 @@ int ApiClient::chatCreateStream(const QString& apiKey,
                                 StreamChunkCallback callback,
                                 std::atomic<int>* cancelFlag)
 {
-    // ---- 输入前置检查（对齐 Python core/api_client.py + ai/openai_compat.py）----
+    // 在发起网络请求前验证配置和消息。
     auto failWith = [&callback](const QString& msg) {
         if (callback) callback(QString(), QString(), true, -1, msg);
     };
-    if (apiKey.trimmed().isEmpty()) {
-        failWith("API Key 未设置，请在设置中配置");
-        return -1;
-    }
     if (apiBase.trimmed().isEmpty()) {
         failWith("API 地址未配置，请在设置中检查服务商与 API Base");
         return -1;
@@ -299,7 +301,11 @@ int ApiClient::chatCreateStream(const QString& apiKey,
         return -1;
     }
 
-    QUrl url(apiBase + "/chat/completions");
+    QUrl url = providerEndpoint(apiBase, QStringLiteral("chat/completions"));
+    if (url.isEmpty()) {
+        failWith("API 地址无效，请填写 http:// 或 https:// 开头的接口根地址");
+        return -1;
+    }
     QNetworkRequest req(url);
     setupRequest(req, apiKey, timeoutSecs);
 
@@ -318,133 +324,43 @@ int ApiClient::chatCreateStream(const QString& apiKey,
 
     QNetworkReply* reply = m_nam->post(req, bodyData);
 
-    // L14 修复：readyRead 连接绑定局部事件循环作为 context object。
-    // 此前 lambda 以 [&] 捕获栈上局部变量（buffer/contentAccum/thinkingAccum/reply），
-    // 而连接绑定 sender（reply，堆对象，deleteLater 排队期间仍存活）——函数返回后
-    // 若队列中还有 readyRead 派发，lambda 将访问已销毁的栈对象（悬垂引用 UB）。
-    // 通过把 context 设为栈对象 loop：loop 在函数返回时销毁 → 连接随之自动断开，
-    // 无论 sender 还是 context 先消亡都不会再触发 lambda；而 loop.exec() 期间
-    // （lambda 唯一需要执行的窗口）所有捕获的栈变量均存活，访问绝对安全。
-    QEventLoop loop;
+    // 连接绑定栈上 context；函数返回后不再访问缓冲区和回调。
+    QEventLoop streamContext;
     QByteArray buffer;
     QString contentAccum;
     QString thinkingAccum;
+    bool receivedChunk = false;
 
-    QObject::connect(reply, &QNetworkReply::readyRead, &loop, [&]() {
-        buffer.append(reply->readAll());
-
-        // 按行解析 SSE 数据
-        while (true) {
-            int nlIdx = buffer.indexOf('\n');
-            if (nlIdx < 0) break;
-
-            QByteArray line = buffer.left(nlIdx).trimmed();
-            buffer.remove(0, nlIdx + 1);
-
-            if (line.isEmpty()) continue;
-            if (!line.startsWith("data: ")) continue;
-
-            QByteArray data = line.mid(6); // 跳过 "data: "
+    auto consumeAvailable = [&](bool final) {
+        // HTTP 错误正文留给统一的错误处理，不能当 SSE 丢弃。
+        if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() >= 400) return;
+        if (reply->isOpen()) buffer.append(reply->readAll());
+        while (!buffer.isEmpty()) {
+            const auto newline = buffer.indexOf('\n');
+            if (newline < 0 && !final) break;
+            const auto length = newline < 0 ? buffer.size() : newline;
+            const QByteArray line = buffer.left(length).trimmed();
+            buffer.remove(0, newline < 0 ? buffer.size() : newline + 1);
+            if (!line.startsWith("data:")) continue;
+            const QByteArray data = line.mid(5).trimmed();
             if (data == "[DONE]") continue;
-
-            QJsonParseError err;
-            QJsonDocument doc = QJsonDocument::fromJson(data, &err);
-            if (err.error != QJsonParseError::NoError) continue;
-
-            QJsonObject chunk = doc.object();
-            QJsonArray choices = chunk["choices"].toArray();
+            const QJsonDocument doc = QJsonDocument::fromJson(data);
+            const QJsonArray choices = doc.object().value("choices").toArray();
             if (choices.isEmpty()) continue;
-
-            QJsonObject choice = choices[0].toObject();
-            QJsonObject delta = choice["delta"].toObject();
-
-            if (delta.contains("content")) {
-                QString c = delta["content"].toString();
-                if (!c.isEmpty()) {
-                    contentAccum += c;
-                }
-            }
-
-            // 处理思考内容 (DeepSeek reasoning_content)
-            if (delta.contains("reasoning_content")) {
-                QString t = delta["reasoning_content"].toString();
-                if (!t.isEmpty()) {
-                    thinkingAccum += t;
-                    if (callback) {
-                        callback(contentAccum, thinkingAccum, false, 0, "");
-                    }
-                }
-            }
+            const QJsonObject delta = choices.first().toObject().value("delta").toObject();
+            receivedChunk = true;
+            const QString content = delta.value("content").toString();
+            const QString thinking = delta.value("reasoning_content").toString();
+            contentAccum += content;
+            thinkingAccum += thinking;
+            if (callback && (!content.isEmpty() || !thinking.isEmpty()))
+                callback(contentAccum, thinkingAccum, false, 0, {});
         }
-    });
-
-    // 运行事件循环（loop 已在 readyRead 连接前声明，见上方 L14 修复注释）
-    QTimer timer;
-    timer.setSingleShot(true);
-
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-
-    QTimer cancelTimer;
-    if (cancelFlag) {
-        cancelTimer.setInterval(100);
-        QObject::connect(&cancelTimer, &QTimer::timeout, [&]() {
-            if (cancelFlag->load()) {
-                SNAP_LOG_INFO("ApiClient::chatCreateStream: 检测到取消请求，立即 abort 并断开网络连接");
-                reply->abort();
-                loop.quit();
-            }
-        });
-        cancelTimer.start();
-    }
-
-    timer.start(timeoutSecs * 1000);
-    loop.exec();
-
-    timer.stop();
-    if (cancelFlag) cancelTimer.stop();
-
-    if (!reply->isFinished()) {
-        reply->abort();
-        // 处理缓冲中剩余的数据
-        while (reply->bytesAvailable()) {
-            buffer.append(reply->readAll());
-        }
-    }
-
-    // 处理剩余缓冲数据
-    while (!buffer.isEmpty()) {
-        int nlIdx = buffer.indexOf('\n');
-        if (nlIdx < 0) { buffer.clear(); break; }
-
-        QByteArray line = buffer.left(nlIdx).trimmed();
-        buffer.remove(0, nlIdx + 1);
-
-        if (line.isEmpty() || !line.startsWith("data: ")) continue;
-
-        QByteArray data = line.mid(6);
-        if (data == "[DONE]") continue;
-
-        QJsonParseError err;
-        QJsonDocument doc = QJsonDocument::fromJson(data, &err);
-        if (err.error != QJsonParseError::NoError) continue;
-
-        QJsonObject chunk = doc.object();
-        QJsonArray choices = chunk["choices"].toArray();
-        if (choices.isEmpty()) continue;
-
-        QJsonObject choice = choices[0].toObject();
-        QJsonObject delta = choice["delta"].toObject();
-
-        if (delta.contains("content")) {
-            QString c = delta["content"].toString();
-            if (!c.isEmpty()) contentAccum += c;
-        }
-        if (delta.contains("reasoning_content")) {
-            QString t = delta["reasoning_content"].toString();
-            if (!t.isEmpty()) thinkingAccum += t;
-        }
-    }
+    };
+    QObject::connect(reply, &QNetworkReply::readyRead, &streamContext,
+                     [&] { consumeAvailable(false); });
+    runEventLoop(reply, timeoutSecs, cancelFlag);
+    consumeAvailable(true);
 
     int errorCode = 0;
     QString errorMsg;
@@ -471,6 +387,11 @@ int ApiClient::chatCreateStream(const QString& apiKey,
         }
     }
 
+    if (errorCode == 0 && !receivedChunk) {
+        errorCode = -1;
+        errorMsg = "API 未返回有效流式内容";
+    }
+
     reply->deleteLater();
 
     // 最终回调
@@ -494,19 +415,19 @@ ApiClient::ModelsResult ApiClient::listModels(const QString& apiKey,
     ModelsResult result;
     result.errorCode = 0;
 
-    // ---- 输入前置检查（对齐 Python core/api_client.py + ai/native_binding.py）----
-    if (apiKey.trimmed().isEmpty()) {
-        result.errorCode = -1;
-        result.errorMsg = "API Key 未设置，请在设置中配置";
-        return result;
-    }
+    // 在发起网络请求前验证配置。
     if (apiBase.trimmed().isEmpty()) {
         result.errorCode = -1;
         result.errorMsg = "API 地址未配置，请在设置中检查服务商与 API Base";
         return result;
     }
 
-    QUrl url(apiBase + "/models");
+    QUrl url = providerEndpoint(apiBase, QStringLiteral("models"));
+    if (url.isEmpty()) {
+        result.errorCode = -1;
+        result.errorMsg = "API 地址无效，请填写接口根地址";
+        return result;
+    }
     QNetworkRequest req(url);
     setupRequest(req, apiKey, timeoutSecs);
 
@@ -566,7 +487,7 @@ ApiClient::ModelsResult ApiClient::listModels(const QString& apiKey,
 }
 
 // ============================================================================
-// 异步获取模型列表（L11：不阻塞 UI）
+// 异步获取模型列表
 // ============================================================================
 
 void ApiClient::listModelsAsync(const QString& apiKey, const QString& apiBase,
@@ -577,12 +498,6 @@ void ApiClient::listModelsAsync(const QString& apiKey, const QString& apiBase,
     result.errorCode = 0;
 
     // ---- 输入前置检查（与同步版一致）----
-    if (apiKey.trimmed().isEmpty()) {
-        result.errorCode = -1;
-        result.errorMsg = "API Key 未设置，请在设置中配置";
-        if (callback) callback(result);
-        return;
-    }
     if (apiBase.trimmed().isEmpty()) {
         result.errorCode = -1;
         result.errorMsg = "API 地址未配置，请在设置中检查服务商与 API Base";
@@ -590,7 +505,13 @@ void ApiClient::listModelsAsync(const QString& apiKey, const QString& apiBase,
         return;
     }
 
-    QUrl url(apiBase + "/models");
+    QUrl url = providerEndpoint(apiBase, QStringLiteral("models"));
+    if (url.isEmpty()) {
+        result.errorCode = -1;
+        result.errorMsg = "API 地址无效，请填写接口根地址";
+        if (callback) callback(result);
+        return;
+    }
     QNetworkRequest req(url);
     setupRequest(req, apiKey, timeoutSecs);
 

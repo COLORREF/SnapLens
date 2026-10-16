@@ -2,7 +2,7 @@
 
 #include <QKeySequence>
 #include <QSemaphore>
-#include <QDebug>
+#include <QPointer>
 
 #include "../log/log_manager.h"
 
@@ -10,22 +10,11 @@
 // HotkeyThread — 内部类：在独立线程中创建隐藏窗口，运行消息循环，注册全局热键
 // ============================================================================
 
-class Win32HotkeyProvider::HotkeyThread : public QThread
+/** @brief 独立拥有热键窗口；不保存服务对象指针，超时分离后仍可安全退出。 */
+class HotkeyThread : public QThread
 {
+    Q_OBJECT
 public:
-    HotkeyThread(Win32HotkeyProvider* provider)
-        : m_provider(provider)
-    {
-    }
-
-    ~HotkeyThread() override
-    {
-        // 正常路径下 stop() 已确保线程退出（wait 成功）或已分离
-        // （分离后本对象在线程结束后才被 deleteLater 删除，析构时线程必然已结束），
-        // 因此这里只需置停止标志，不做 wait/terminate。
-        m_stopped = true;
-    }
-
     bool register_hotkey(UINT modifiers, UINT vk)
     {
         m_modifiers = modifiers;
@@ -35,11 +24,11 @@ public:
         // 3s 防御 QThread::start 失败/调度异常等极端情况，超时视为注册失败，
         // 避免 acquire() 无限期阻塞主线程。
         if (!m_started_sem.tryAcquire(1, 3000)) {
-            qWarning() << "HotkeyThread::register_hotkey: timeout waiting for registration";
+            SNAP_LOG_WARNING("HotkeyThread: 等待热键注册超时");
             // 线程可能仍存活：置停止标志让其退出消息循环并短等待，
             // 确保返回后调用方不会对运行中的 QThread 对象执行 delete（UB）。
             request_stop();
-            m_register_result = false;
+            return false;
         }
         return m_register_result;
     }
@@ -57,6 +46,9 @@ public:
             SNAP_LOG_WARNING("HotkeyThread::request_stop: 线程未在预期时间内退出");
         }
     }
+
+signals:
+    void activated();
 
 protected:
     void run() override
@@ -82,6 +74,9 @@ protected:
 
         constexpr int kHotkeyId = 1;
         if (!RegisterHotKey(m_hwnd, kHotkeyId, m_modifiers, m_vk)) {
+            DestroyWindow(m_hwnd);
+            m_hwnd = nullptr;
+            UnregisterClassW(className, GetModuleHandleW(nullptr));
             m_register_result = false;
             m_started_sem.release();
             return;
@@ -121,9 +116,8 @@ private:
         if (msg == WM_HOTKEY) {
             auto* self = reinterpret_cast<HotkeyThread*>(
                 GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-            if (self && self->m_provider) {
-                // Only emit Qt signal — queued connection ensures main-thread delivery
-                emit self->m_provider->triggered();
+            if (self && !self->m_stopped.load()) {
+                emit self->activated();
             }
             return 0;
         }
@@ -131,11 +125,10 @@ private:
         return DefWindowProcW(hwnd, msg, wParam, lParam);
     }
 
-    Win32HotkeyProvider* m_provider;
     HWND m_hwnd = nullptr;
     UINT m_modifiers = 0;
     UINT m_vk = 0;
-    bool m_register_result = false;
+    std::atomic<bool> m_register_result{false};
     QSemaphore m_started_sem;
     std::atomic<bool> m_stopped{false};
 };
@@ -161,14 +154,18 @@ bool Win32HotkeyProvider::start(const QString& sequence_text)
     UINT modifiers = 0;
     UINT vk = 0;
     if (!parse_sequence(sequence_text, modifiers, vk)) {
-        qWarning() << "Win32HotkeyProvider: failed to parse sequence:" << sequence_text;
+        SNAP_LOG_WARNING("无法解析热键: " + sequence_text);
         return false;
     }
 
-    m_thread = new HotkeyThread(this);
+    m_thread = new HotkeyThread;
+    connect(m_thread, &HotkeyThread::activated, this,
+            [this, thread = QPointer<HotkeyThread>(m_thread)] {
+                if (thread && m_thread == thread && m_registered) emit triggered();
+            }, Qt::QueuedConnection);
     bool ok = m_thread->register_hotkey(modifiers, vk);
     if (!ok) {
-        qWarning() << "Win32HotkeyProvider: RegisterHotKey failed for:" << sequence_text;
+        SNAP_LOG_WARNING("注册全局热键失败: " + sequence_text);
         // 安全清理：register_hotkey 失败时线程可能仍未完全退出（极端异常），
         // 对运行中的 QThread 对象 delete 是未定义行为（"Destroyed while running" 崩溃）。
         // 先请求停止；仍未退出则分离线程对象，由 finished → deleteLater 自清理。
@@ -192,6 +189,7 @@ bool Win32HotkeyProvider::start(const QString& sequence_text)
 void Win32HotkeyProvider::stop()
 {
     if (m_thread) {
+        disconnect(m_thread, nullptr, this, nullptr);
         m_thread->request_stop();
         if (m_thread->isRunning()) {
             // 极端异常（系统调用卡死）：不能 delete 运行中的 QThread 对象
@@ -288,3 +286,5 @@ UINT Win32HotkeyProvider::qt_key_to_vk(Qt::Key key)
 
     return 0;
 }
+
+#include "hotkey.moc"

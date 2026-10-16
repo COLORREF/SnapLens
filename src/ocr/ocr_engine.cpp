@@ -18,12 +18,6 @@ bool dirHasTraineddata(const QString& dir)
 
 } // namespace
 
-OcrEngine& OcrEngine::instance()
-{
-    static OcrEngine inst;
-    return inst;
-}
-
 OcrEngine::~OcrEngine()
 {
     SNAP_LOG_DEBUG(QStringLiteral("~OcrEngine"));
@@ -34,7 +28,8 @@ bool OcrEngine::init(const QString& tessdataDir, const QString& language)
 {
     QMutexLocker locker(&m_mutex);
 
-    if (m_initialized && m_currentLanguage == language) {
+    if (m_initialized && m_currentLanguage == language
+        && m_currentDirectory == QDir(tessdataDir).absolutePath()) {
         SNAP_LOG_DEBUG(QStringLiteral("init: already initialized with same language, reusing"));
         return true;
     }
@@ -123,6 +118,7 @@ bool OcrEngine::init(const QString& tessdataDir, const QString& language)
 
     m_initialized = true;
     m_currentLanguage = language;
+    m_currentDirectory = QDir(tessdataDir).absolutePath();
     return true;
 }
 
@@ -252,10 +248,7 @@ QString OcrEngine::version()
 
 QString OcrEngine::findTessdataDir()
 {
-    // Cache the result to avoid repeated filesystem scans
-    static QString s_cachedDir;
-    static bool s_cached = false;
-    if (s_cached) return s_cachedDir;
+    // Re-scan so newly installed language packs are visible to the next job.
 
     QString appDir = QCoreApplication::applicationDirPath();
     SNAP_LOG_DEBUG(QStringLiteral("findTessdataDir: appDir=%1").arg(appDir));
@@ -288,8 +281,6 @@ QString OcrEngine::findTessdataDir()
             if (!entries.isEmpty()) {
                 QString result = QDir::toNativeSeparators(dir.absolutePath());
                 SNAP_LOG_INFO(QStringLiteral("findTessdataDir: found %1").arg(result));
-                s_cachedDir = result;
-                s_cached = true;
                 return result;
             }
         }
@@ -300,7 +291,5 @@ QString OcrEngine::findTessdataDir()
     // the language-download UI also needs a writable tessdata directory.
     QString fallback = QDir(appDir).filePath("tessdata");
     SNAP_LOG_INFO(QStringLiteral("findTessdataDir: using fallback %1").arg(fallback));
-    s_cachedDir = fallback;
-    s_cached = true;
     return fallback;
 }

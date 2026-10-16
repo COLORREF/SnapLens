@@ -15,6 +15,9 @@ class ICursorProvider;
 class IWindowProvider;
 class Settings;
 
+/** @brief 一次截图会话，管理多屏覆盖层、Esc 拦截和光标约束。
+ * @details 会话只能启动一次；finished 后调用方应通过 deleteLater 释放对象。
+ */
 class SnipSession : public QObject
 {
     Q_OBJECT
@@ -33,7 +36,9 @@ public:
 
     ~SnipSession() override;
 
+    /** @brief 抓取桌面并显示覆盖层；失败时结束会话并返回 false。 */
     bool start();
+    /** @brief 幂等释放覆盖层和系统输入约束，并发送 finished。 */
     void close();
 
 signals:

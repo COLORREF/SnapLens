@@ -34,11 +34,12 @@ SnipSession::~SnipSession()
 
 bool SnipSession::start()
 {
+    if (m_closed || m_desktop) return false;
     m_desktop = new CapturedDesktop();
     if (m_desktop->shots.isEmpty()) {
         delete m_desktop;
         m_desktop = nullptr;
-        emit finished();
+        close();
         return false;
     }
 
@@ -62,6 +63,9 @@ bool SnipSession::start()
         connect(overlay, &SnipOverlay::actionChosen,
                 this, &SnipSession::onAction);
         m_overlays.append(overlay);
+        connect(overlay, &SnipOverlay::cursorNudged, this, [this] {
+            for (auto* item : m_overlays) item->syncCursorPosition();
+        });
     }
 
     for (auto *overlay : m_overlays)

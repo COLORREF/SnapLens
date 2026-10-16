@@ -56,6 +56,8 @@ SnipOverlay::SnipOverlay(const ScreenShot &shot,
         m_crosshairInvert         = s.crosshair_invert;
         m_crosshairEnabled        = s.crosshair_enabled;
         m_cursorEnabled           = s.cursor_enabled;
+        m_cursorKeyboardEnabled   = s.cursor_keyboard_enabled;
+        m_cursorKeyboardMode      = s.cursor_keyboard_mode;
         m_gridEnabled             = s.grid_enabled;
         m_gridColorStr            = s.grid_color;
         m_gridAlpha               = s.grid_alpha;
@@ -79,6 +81,8 @@ SnipOverlay::SnipOverlay(const ScreenShot &shot,
         m_colorLabelBgAlpha       = s.color_label_bg_alpha;
         m_colorFormat             = s.color_format;
         m_copyColorKey            = s.copy_color_key;
+        m_colorFormatKey          = s.color_format_key;
+        m_colorSwatchEnabled      = s.color_swatch_enabled;
         m_copyHexPrefix           = s.copy_hex_prefix;
         m_copyRgbPrefix           = s.copy_rgb_prefix;
     }
@@ -104,7 +108,7 @@ qreal SnipOverlay::dpr() const
     return m_shot.dpr();
 }
 
-void SnipOverlay::localToPhys(int lx, int ly, double &px, double &py) const
+void SnipOverlay::localToPhys(qreal lx, qreal ly, double &px, double &py) const
 {
     qreal d = dpr();
     QPointF origin = m_shot.physicalOrigin();
@@ -115,11 +119,15 @@ void SnipOverlay::localToPhys(int lx, int ly, double &px, double &py) const
 void SnipOverlay::cursorPixmapPos(int &px, int &py) const
 {
     qreal d = dpr();
-    int cx = m_cursor.x();
-    int cy = m_cursor.y();
     const QPixmap &pm = m_shot.pixmap;
-    px = qBound(0, static_cast<int>(cx * d), pm.width() - 1);
-    py = qBound(0, static_cast<int>(cy * d), pm.height() - 1);
+    QPointF pixel = m_cursor * d;
+    if (m_cursorProvider) {
+        int x, y;
+        m_cursorProvider->getPos(x, y);
+        pixel = QPointF(x, y) - m_shot.physicalOrigin();
+    }
+    px = qBound(0, qRound(pixel.x()), pm.width() - 1);
+    py = qBound(0, qRound(pixel.y()), pm.height() - 1);
 }
 
 QRectF SnipOverlay::physToLocal(int left, int top, int right, int bottom) const
@@ -190,6 +198,7 @@ void SnipOverlay::showToolbar()
 
 void SnipOverlay::mousePressEvent(QMouseEvent *event)
 {
+    m_colorShiftPending = false;
     if (event->button() != Qt::LeftButton)
         return;
     emit selectionStarted(this);
@@ -203,9 +212,19 @@ void SnipOverlay::mousePressEvent(QMouseEvent *event)
 
 void SnipOverlay::mouseMoveEvent(QMouseEvent *event)
 {
-    m_cursor = event->pos();
+    m_cursor = event->position();
+    syncCursorPosition();
+}
+
+void SnipOverlay::syncCursorPosition()
+{
+    if (m_cursorProvider) {
+        int x, y;
+        m_cursorProvider->getPos(x, y);
+        m_cursor = (QPointF(x, y) - m_shot.physicalOrigin()) / dpr();
+    }
     if (m_state == Dragging) {
-        m_selection = QRect(m_anchor, m_cursor).normalized().intersected(rect());
+        m_selection = QRect(m_anchor, m_cursor.toPoint()).normalized().intersected(rect());
     } else if (m_state == Idle) {
         updateHover();
     }
@@ -293,10 +312,57 @@ bool SnipOverlay::matchCopyColorKey(QKeyEvent *event) const
             && event->modifiers() == combo.keyboardModifiers());
 }
 
+bool SnipOverlay::moveCursorWithKey(QKeyEvent* event)
+{
+    if (!m_cursorKeyboardEnabled || m_state == Selected || !m_cursorProvider
+        || event->modifiers() != Qt::NoModifier) return false;
+    QPoint delta;
+    const bool arrows = m_cursorKeyboardMode != "wasd";
+    const bool wasd = m_cursorKeyboardMode != "arrows";
+    switch (event->key()) {
+    case Qt::Key_Left: if (arrows) delta.setX(-1); break;
+    case Qt::Key_Right: if (arrows) delta.setX(1); break;
+    case Qt::Key_Up: if (arrows) delta.setY(-1); break;
+    case Qt::Key_Down: if (arrows) delta.setY(1); break;
+    case Qt::Key_A: if (wasd) delta.setX(-1); break;
+    case Qt::Key_D: if (wasd) delta.setX(1); break;
+    case Qt::Key_W: if (wasd) delta.setY(-1); break;
+    case Qt::Key_S: if (wasd) delta.setY(1); break;
+    default: break;
+    }
+    if (delta.isNull()) return false;
+    if (!event->isAutoRepeat()) {
+        int x, y;
+        m_cursorProvider->getPos(x, y);
+        if (m_cursorProvider->setPos(x + delta.x(), y + delta.y())) {
+            syncCursorPosition();
+            emit cursorNudged();
+        }
+    }
+    return true;
+}
+
 void SnipOverlay::keyPressEvent(QKeyEvent *event)
 {
+    if (event->key() == Qt::Key_Shift && !event->isAutoRepeat()) {
+        m_colorShiftPending = m_colorFormatKey == QStringLiteral("Shift")
+            && m_state != Selected && m_colorLabelEnabled
+            && !(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier));
+    } else if (event->key() != Qt::Key_Shift) {
+        m_colorShiftPending = false;
+    }
     if (event->key() == Qt::Key_Escape) {
         emit cancelled();
+    } else if (moveCursorWithKey(event)) {
+        event->accept();
+    } else if (m_state != Selected && m_colorLabelEnabled
+               && m_colorFormatKey != QStringLiteral("Shift")
+               && !m_colorFormatKey.isEmpty()
+               && QKeySequence(event->keyCombination()) == QKeySequence(m_colorFormatKey)) {
+        if (!event->isAutoRepeat()) {
+            m_colorFormat = m_colorFormat == QStringLiteral("rgb") ? QStringLiteral("hex") : QStringLiteral("rgb");
+            update();
+        }
     } else if (m_state != Selected
                && m_colorLabelEnabled
                && matchCopyColorKey(event)) {
@@ -312,6 +378,19 @@ void SnipOverlay::keyPressEvent(QKeyEvent *event)
             emit actionChosen(QStringLiteral("save"));
         }
     }
+}
+
+void SnipOverlay::keyReleaseEvent(QKeyEvent *event)
+{
+    if (event->key() == Qt::Key_Shift && !event->isAutoRepeat()) {
+        if (m_colorShiftPending && m_state != Selected && m_colorLabelEnabled) {
+            m_colorFormat = m_colorFormat == QStringLiteral("rgb")
+                ? QStringLiteral("hex") : QStringLiteral("rgb");
+            update();
+        }
+        m_colorShiftPending = false;
+    }
+    QWidget::keyReleaseEvent(event);
 }
 
 // ============================================================================
@@ -373,9 +452,9 @@ void SnipOverlay::drawIdleOverlays(QPainter &painter)
     if (m_state == Selected || !underMouse())
         return;
 
-    int cx = m_cursor.x();
-    int cy = m_cursor.y();
-    drawCrosshairLines(painter, cx, cy);
+    const qreal cx = m_cursor.x();
+    const qreal cy = m_cursor.y();
+    drawCrosshairLines(painter, m_cursor.x(), m_cursor.y());
 
     if (m_magnifierEnabled)
         drawMagnifierInline(painter, cx, cy);
@@ -387,7 +466,7 @@ void SnipOverlay::drawIdleOverlays(QPainter &painter)
 // 放大镜 — inline drawing (matching Python's approach to avoid widget lag)
 // ============================================================================
 
-SnipOverlay::MgFrame SnipOverlay::prepareMgFrame(int cx, int cy)
+SnipOverlay::MgFrame SnipOverlay::prepareMgFrame(qreal cx, qreal cy)
 {
     MgFrame f;
     f.zoom = m_magnifierZoom;
@@ -456,7 +535,7 @@ SnipOverlay::MgFrame SnipOverlay::prepareMgFrame(int cx, int cy)
     return f;
 }
 
-void SnipOverlay::drawMagnifierInline(QPainter &painter, int cx, int cy)
+void SnipOverlay::drawMagnifierInline(QPainter &painter, qreal cx, qreal cy)
 {
     MgFrame f = prepareMgFrame(cx, cy);
     if (f.dispW <= 0 || f.dispH <= 0)
@@ -596,7 +675,11 @@ void SnipOverlay::computeLabelTargets(const MgFrame &f, QPainter &painter)
     QFontMetrics metrics = painter.fontMetrics();
     double textH = metrics.height() + 8;
     double coordW = f.coordText.isEmpty() ? 0 : metrics.horizontalAdvance(f.coordText) + 12;
-    double colorW = f.colorText.isEmpty() ? 0 : metrics.horizontalAdvance(f.colorText) + 12;
+    const QSizeF colorSize = colorLabelSize(metrics, f.colorText);
+    double colorW = colorSize.width();
+    m_hintSize = f.colorText.isEmpty() ? QSizeF() : QSizeF(metrics.horizontalAdvance(colorShortcutText()) + 12, textH);
+    const bool horizontal = f.zoom >= 7 && f.zoom < 10;
+    if (!horizontal) colorW = qMax(colorW, m_hintSize.width());
 
     if (f.zoom >= 10) {
         double labelW = qMax(coordW, colorW);
@@ -604,7 +687,7 @@ void SnipOverlay::computeLabelTargets(const MgFrame &f, QPainter &painter)
         m_coordSize = QSizeF(labelW, textH);
         m_colorTarget = QPointF(f.mgX + 3,
             f.mgY + 3 + f.zoomLabelH + 2 + (f.coordText.isEmpty() ? 0 : textH));
-        m_colorSize = QSizeF(labelW, textH);
+        m_colorSize = QSizeF(labelW, colorSize.height());
     } else if (f.zoom >= 7) {
         double totalW = coordW + colorW;
         double baseX = f.mgX + (f.dispW - totalW) / 2;
@@ -612,7 +695,7 @@ void SnipOverlay::computeLabelTargets(const MgFrame &f, QPainter &painter)
         m_coordTarget = QPointF(baseX, baseY);
         m_coordSize = QSizeF(coordW, textH);
         m_colorTarget = QPointF(baseX + coordW, baseY);
-        m_colorSize = QSizeF(colorW, textH);
+        m_colorSize = colorSize;
     } else {
         double labelW = qMax(coordW, colorW);
         double baseX = f.mgX + (f.dispW - labelW) / 2;
@@ -620,7 +703,14 @@ void SnipOverlay::computeLabelTargets(const MgFrame &f, QPainter &painter)
         m_coordTarget = QPointF(baseX, baseY);
         m_coordSize = QSizeF(labelW, textH);
         m_colorTarget = QPointF(baseX, baseY + (f.coordText.isEmpty() ? 0 : textH));
-        m_colorSize = QSizeF(labelW, textH);
+        m_colorSize = QSizeF(labelW, colorSize.height());
+    }
+    if (horizontal) {
+        const qreal center = m_coordTarget.x() + (coordW + colorW) / 2;
+        m_hintTarget = QPointF(center - m_hintSize.width() / 2, m_colorTarget.y() + textH);
+    } else {
+        m_hintSize.setWidth(m_colorSize.width());
+        m_hintTarget = m_colorTarget + QPointF(0, colorSize.height());
     }
 }
 
@@ -653,6 +743,7 @@ void SnipOverlay::animateLabels(const MgFrame &f)
         m_mgPos = QPointF(f.mgX, f.mgY);
         m_coordPos = QPointF(m_coordTarget);
         m_colorPos = QPointF(m_colorTarget);
+        m_hintPos = m_hintTarget;
         return;
     }
 
@@ -660,6 +751,7 @@ void SnipOverlay::animateLabels(const MgFrame &f)
     if (m_mgPos.x() < 0) m_mgPos = QPointF(f.mgX, f.mgY);
     if (m_coordPos.x() < 0) m_coordPos = QPointF(m_coordTarget);
     if (m_colorPos.x() < 0) m_colorPos = QPointF(m_colorTarget);
+    if (m_hintPos.x() < 0) m_hintPos = m_hintTarget;
 
     if (m_labelAnimGroup) {
         m_labelAnimGroup->stop();
@@ -702,6 +794,12 @@ void SnipOverlay::animateLabels(const MgFrame &f)
             update();
         });
         group->addAnimation(colorAnim);
+        auto* hintAnim = makeAnim(m_hintPos, m_hintTarget);
+        connect(hintAnim, &QVariantAnimation::valueChanged, this, [this](const QVariant& v) {
+            m_hintPos = v.toPointF();
+            update();
+        });
+        group->addAnimation(hintAnim);
     }
 
     connect(group, &QParallelAnimationGroup::finished, this, &SnipOverlay::onLabelAnimDone);
@@ -744,16 +842,23 @@ void SnipOverlay::drawMgLabels(QPainter &painter, const MgFrame &f)
 
     QPointF coordPos = (m_coordPos.x() >= 0) ? m_coordPos : m_coordTarget;
     QPointF colorPos = (m_colorPos.x() >= 0) ? m_colorPos : m_colorTarget;
+    QPointF hintPos = (m_hintPos.x() >= 0) ? m_hintPos : m_hintTarget;
 
-    // Clamp labels to stay within visible area
-    double viewW = width(), viewH = height();
-    coordPos.setX(qBound(0.0, coordPos.x(), viewW - m_coordSize.width()));
-    coordPos.setY(qBound(0.0, coordPos.y(), viewH - m_coordSize.height()));
-    colorPos.setX(qBound(0.0, colorPos.x(), viewW - m_colorSize.width()));
-    colorPos.setY(qBound(0.0, colorPos.y(), viewH - m_colorSize.height()));
+    // Move the labels together at screen edges so the taller color block cannot
+    // overlap the coordinate label when clamped against the bottom edge.
+    QRectF bounds;
+    if (!f.coordText.isEmpty()) bounds = QRectF(coordPos, m_coordSize);
+    if (!f.colorText.isEmpty()) bounds = bounds.united(QRectF(colorPos, m_colorSize));
+    if (!f.colorText.isEmpty()) bounds = bounds.united(QRectF(hintPos, m_hintSize));
+    const QPointF offset(
+        qBound(0.0, bounds.x(), qMax(0.0, width() - bounds.width())) - bounds.x(),
+        qBound(0.0, bounds.y(), qMax(0.0, height() - bounds.height())) - bounds.y());
+    coordPos += offset;
+    colorPos += offset;
+    hintPos += offset;
 
     drawInfoLabelRects(painter, f.coordText, f.colorText,
-                       coordPos, colorPos, m_coordSize, m_colorSize);
+                       coordPos, colorPos, m_coordSize, m_colorSize, hintPos, m_hintSize);
 }
 
 void SnipOverlay::drawZoomLabel(QPainter &painter, double mgX, double mgY, double zoom)
@@ -788,7 +893,7 @@ void SnipOverlay::updateMagnifierPosition(int /*cx*/, int /*cy*/)
 // 准星线
 // ============================================================================
 
-void SnipOverlay::drawCrosshairLines(QPainter &painter, int cx, int cy)
+void SnipOverlay::drawCrosshairLines(QPainter &painter, qreal cx, qreal cy)
 {
     if (!m_crosshairEnabled)
         return;
@@ -879,6 +984,25 @@ QString SnipOverlay::colorText() const
     return QStringLiteral("色值：%1").arg(formatColorText(c.red(), c.green(), c.blue()));
 }
 
+QString SnipOverlay::colorShortcutText() const
+{
+    const QString key = QKeySequence(m_copyColorKey).toString(QKeySequence::NativeText);
+    const QString formatKey = m_colorFormatKey == QStringLiteral("Shift") ? m_colorFormatKey
+        : QKeySequence(m_colorFormatKey).toString(QKeySequence::NativeText);
+    QStringList hints;
+    if (!key.isEmpty()) hints << QStringLiteral("按 %1 复制色值").arg(key);
+    if (!formatKey.isEmpty()) hints << QStringLiteral("%1 切换格式").arg(formatKey);
+    return hints.join(QStringLiteral(" · "));
+}
+
+QSizeF SnipOverlay::colorLabelSize(const QFontMetrics& metrics, const QString& color) const
+{
+    if (color.isEmpty()) return {};
+    const int rowHeight = metrics.height() + 8;
+    return QSizeF(metrics.horizontalAdvance(color) + 12
+                      + (m_colorSwatchEnabled ? metrics.height() + 6 : 0), rowHeight);
+}
+
 QColor SnipOverlay::pixelColor(int px, int py) const
 {
     QImage img = m_shot.pixmap.toImage();
@@ -910,7 +1034,7 @@ QString SnipOverlay::formatColorCopy(int r, int g, int b) const
     }
 }
 
-void SnipOverlay::drawInfoLabel(QPainter &painter, int cx, int cy, int gap)
+void SnipOverlay::drawInfoLabel(QPainter &painter, qreal cx, qreal cy, int gap)
 {
     QString coord = coordText();
     QString color = colorText();
@@ -920,9 +1044,10 @@ void SnipOverlay::drawInfoLabel(QPainter &painter, int cx, int cy, int gap)
     QFontMetrics metrics = painter.fontMetrics();
     double textH = metrics.height() + 8;
     double coordW = coord.isEmpty() ? 0 : metrics.horizontalAdvance(coord) + 12;
-    double colorW = color.isEmpty() ? 0 : metrics.horizontalAdvance(color) + 12;
+    const QSizeF colorSize = colorLabelSize(metrics, color);
+    double colorW = color.isEmpty() ? 0 : qMax(colorSize.width(), qreal(metrics.horizontalAdvance(colorShortcutText()) + 12));
     double labelW = qMax(coordW, colorW);
-    double totalH = (coord.isEmpty() ? 0 : textH) + (color.isEmpty() ? 0 : textH);
+    double totalH = (coord.isEmpty() ? 0 : textH) + colorSize.height() + (color.isEmpty() ? 0 : textH);
 
     double x = cx + gap;
     double y = cy + gap;
@@ -937,13 +1062,15 @@ void SnipOverlay::drawInfoLabel(QPainter &painter, int cx, int cy, int gap)
     QPointF colorPos(x, y + (coord.isEmpty() ? 0 : textH));
     drawInfoLabelRects(painter, coord, color,
                        coordPos, colorPos,
-                       QSizeF(labelW, textH), QSizeF(labelW, textH));
+                       QSizeF(labelW, textH), QSizeF(labelW, colorSize.height()),
+                       colorPos + QPointF(0, colorSize.height()), QSizeF(labelW, textH));
 }
 
 void SnipOverlay::drawInfoLabelRects(QPainter &painter,
                                      const QString &coord, const QString &color,
                                      QPointF coordPos, QPointF colorPos,
-                                     QSizeF coordSize, QSizeF colorSize)
+                                     QSizeF coordSize, QSizeF colorSize,
+                                     QPointF hintPos, QSizeF hintSize)
 {
     if (!coord.isEmpty()) {
         QColor bg(m_coordLabelBgColorStr);
@@ -962,7 +1089,22 @@ void SnipOverlay::drawInfoLabelRects(QPainter &painter,
         QColor textC(m_colorLabelTextColorStr);
         textC.setAlphaF(m_colorLabelTextAlpha / 100.0);
         painter.setPen(textC);
-        painter.drawText(QRectF(colorPos, colorSize),
+        const qreal rowHeight = painter.fontMetrics().height() + 8;
+        const qreal swatchSize = painter.fontMetrics().height();
+        int px, py;
+        cursorPixmapPos(px, py);
+        const QRectF swatch(colorPos.x() + 6, colorPos.y() + 4, swatchSize, swatchSize);
+        if (m_colorSwatchEnabled) {
+            QColor sample = pixelColor(px, py);
+            sample.setAlpha(255);
+            painter.fillRect(swatch, sample);
+            painter.drawRect(swatch);
+        }
+        const qreal textOffset = m_colorSwatchEnabled ? swatchSize + 12 : 6;
+        painter.drawText(QRectF(colorPos.x() + textOffset, colorPos.y(),
+                               colorSize.width() - textOffset - 6, rowHeight),
                          Qt::AlignLeft | Qt::AlignVCenter, color);
+        painter.fillRect(QRectF(hintPos, hintSize), bg);
+        painter.drawText(QRectF(hintPos, hintSize), Qt::AlignCenter, colorShortcutText());
     }
 }

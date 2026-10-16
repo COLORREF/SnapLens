@@ -3,6 +3,7 @@
 #include "../settings.h"
 #include "../notify/notify_manager.h"
 #include "../ui/zoomable_view.h"
+#include "../ui/snapkit.h"
 #include "../log/log_manager.h"
 
 #include <QClipboard>
@@ -16,6 +17,8 @@
 #include <QThread>
 #include <QVBoxLayout>
 #include <QDir>
+
+using namespace SnapUi;
 
 // ============================================================================
 // OcrWorker
@@ -33,7 +36,7 @@ OcrWorker::OcrWorker(const QImage& image, const QString& ocrLangs,
 
 void OcrWorker::process()
 {
-    OcrEngine& engine = OcrEngine::instance();
+    OcrEngine engine; // 每个任务拥有独立的原生引擎和语言配置。
 
     // Determine tessdata directory
     QString tessDir = m_tessdataDir;
@@ -80,19 +83,23 @@ void OcrWorker::process()
 
 OcrWindow::OcrWindow(const QPixmap& pixmap, Settings* settings,
                      NotifyManager* notifyManager, QWidget* parent)
-    : QWidget(parent)
+    : ElaWindow(parent)
     , m_pixmap(pixmap)
     , m_settings(settings)
     , m_notifyManager(notifyManager)
 {
-    setWindowTitle("OCR 识别");
-    resize(900, 560);
-    setMinimumSize(640, 400);
-    setWindowFlags(Qt::Window | Qt::WindowStaysOnTopHint);
+    setWindowTitle("SnapLens · OCR 识别");
+    resize(1120, 700);
+    setMinimumSize(820, 520);
+    setIsNavigationBarEnable(false);
+    setIsStayTop(true);
     setAttribute(Qt::WA_DeleteOnClose);
+    setIsDefaultClosed(false);
+    connect(this, &ElaWindow::closeButtonClicked, this, [this] { close(); });
 
     buildUi();
     startOcr();
+    polishPopup(this);
 }
 
 bool OcrWindow::isBusy() const
@@ -102,47 +109,64 @@ bool OcrWindow::isBusy() const
 
 void OcrWindow::buildUi()
 {
-    QVBoxLayout* root = new QVBoxLayout(this);
-    root->setContentsMargins(12, 12, 12, 12);
-    root->setSpacing(10);
+    auto* central = new QWidget(this);
+    central->setWindowTitle("OCR 识别");
+    auto* root = new QVBoxLayout(central);
+    root->setContentsMargins(Dim::PageHMargin, 16, Dim::PageHMargin, 16);
+    root->setSpacing(14);
 
-    // Top toolbar
-    QHBoxLayout* toolbar = new QHBoxLayout();
-    toolbar->setSpacing(8);
-    toolbar->addStretch();
+    auto* headerRow = new QHBoxLayout();
+    headerRow->setSpacing(16);
+    headerRow->addWidget(pageHeader(
+        "OCR 文字识别",
+        "左侧核对截图（滚轮缩放、拖动平移），右侧为识别结果，可整段复制。",
+        central), 1);
+    headerRow->addStretch();
 
-    m_copyBtn = new QPushButton("复制 OCR 原文");
+    m_copyBtn = primaryButton("复制识别结果", central);
     m_copyBtn->setEnabled(false);
     connect(m_copyBtn, &QPushButton::clicked, this, &OcrWindow::copyResult);
-    toolbar->addWidget(m_copyBtn);
+    headerRow->addWidget(m_copyBtn, 0, Qt::AlignBottom);
+    root->addLayout(headerRow);
 
-    root->addLayout(toolbar);
+    auto* workspace = new Card(central);
+    auto* workspaceLayout = new QVBoxLayout(workspace);
+    workspaceLayout->setContentsMargins(10, 10, 10, 10);
+    workspaceLayout->setSpacing(0);
 
-    // Main: left-right split
-    QSplitter* splitter = new QSplitter(Qt::Horizontal);
+    auto* splitter = new QSplitter(Qt::Horizontal, workspace);
+    splitter->setChildrenCollapsible(false);
 
-    // Left: zoomable image
+    auto* imagePanel = new PanelCard("截图预览",
+                                     "滚轮缩放 · 按住拖动平移", workspace);
     m_imageView = new ZoomableView();
     m_imageView->setPixmap(m_pixmap);
-    splitter->addWidget(m_imageView);
+    imagePanel->setContent(m_imageView);
+    splitter->addWidget(imagePanel);
 
-    // Right: OCR text
-    QWidget* rightPanel = new QWidget();
-    QVBoxLayout* rightLayout = new QVBoxLayout(rightPanel);
-    rightLayout->setContentsMargins(0, 0, 0, 0);
-
-    m_textEdit = new QPlainTextEdit();
+    auto* textPanel = new PanelCard("识别结果", {}, workspace);
+    m_textEdit = new ElaPlainTextEdit();
     m_textEdit->setReadOnly(true);
-    m_textEdit->setPlaceholderText("正在识别中，请稍候...");
-    rightLayout->addWidget(m_textEdit);
-    splitter->addWidget(rightPanel);
+    m_textEdit->setPlaceholderText("正在识别中，请稍候…");
+    textPanel->setContent(m_textEdit);
+    splitter->addWidget(textPanel);
 
-    splitter->setSizes({400, 460});
-    root->addWidget(splitter);
+    splitter->setSizes({460, 560});
+    workspaceLayout->addWidget(splitter);
+    root->addWidget(workspace, 1);
 
-    // Status bar
-    m_statusLabel = new QLabel("正在识别...");
-    root->addWidget(m_statusLabel);
+    auto* statusRow = new QHBoxLayout();
+    statusRow->setSpacing(8);
+    m_progressRing = new ElaProgressRing(central);
+    m_progressRing->setFixedSize(18, 18);
+    m_progressRing->setBusyingWidth(3);
+    m_progressRing->setIsBusying(true);
+    statusRow->addWidget(m_progressRing);
+    m_statusLabel = caption("正在识别图片中的文字…", central);
+    statusRow->addWidget(m_statusLabel);
+    statusRow->addStretch();
+    root->addLayout(statusRow);
+    addCentralWidget(central);
 }
 
 void OcrWindow::startOcr()
@@ -154,15 +178,16 @@ void OcrWindow::startOcr()
     QImage image = m_pixmap.toImage().convertToFormat(QImage::Format_RGB888);
 
     m_workerThread = new QThread(this);
-    m_worker = new OcrWorker(image, langs, tessdata);
-    m_worker->moveToThread(m_workerThread);
+    auto* worker = new OcrWorker(image, langs, tessdata);
+    worker->moveToThread(m_workerThread);
 
-    connect(m_workerThread, &QThread::started, m_worker, &OcrWorker::process);
-    connect(m_worker, &OcrWorker::finished, this, &OcrWindow::onResult);
-    connect(m_worker, &OcrWorker::error, this, &OcrWindow::onError);
-    connect(m_worker, &OcrWorker::finished, m_workerThread, &QThread::quit);
-    connect(m_worker, &OcrWorker::error, m_workerThread, &QThread::quit);
-    connect(m_workerThread, &QThread::finished, m_worker, &QObject::deleteLater);
+    connect(m_workerThread, &QThread::started, worker, &OcrWorker::process);
+    m_resultConnection = connect(worker, &OcrWorker::finished, this, &OcrWindow::onResult);
+    m_errorConnection = connect(worker, &OcrWorker::error, this, &OcrWindow::onError);
+    // quit() 线程安全，直接调用使收尾不依赖主线程事件循环仍在运行。
+    connect(worker, &OcrWorker::finished, m_workerThread, &QThread::quit, Qt::DirectConnection);
+    connect(worker, &OcrWorker::error, m_workerThread, &QThread::quit, Qt::DirectConnection);
+    connect(m_workerThread, &QThread::finished, worker, &QObject::deleteLater);
 
     m_workerThread->start();
 }
@@ -171,13 +196,17 @@ void OcrWindow::onResult(const QString& text)
 {
     m_textEdit->setPlainText(text);
     m_copyBtn->setEnabled(!text.isEmpty());
-    m_statusLabel->setText("OCR 识别完成");
+    m_statusLabel->setText("识别完成 · 可直接复制或继续截图");
+    m_progressRing->setVisible(false);
 }
 
 void OcrWindow::onError(const QString& msg)
 {
     m_textEdit->setPlainText(QString("[识别失败]\n%1").arg(msg));
     m_statusLabel->setText("识别失败");
+    m_progressRing->setVisible(false);
+    ElaMessageBar::error(ElaMessageBarType::TopRight,
+                         "OCR 识别失败", msg, 4200, this);
     if (m_notifyManager) {
         m_notifyManager->notify("ocr_fail", "OCR 识别失败", msg);
     }
@@ -188,22 +217,23 @@ void OcrWindow::copyResult()
     QString text = m_textEdit->toPlainText();
     if (!text.isEmpty() && !text.startsWith("[识别失败]")) {
         QGuiApplication::clipboard()->setText(text);
-        m_statusLabel->setText("已复制到剪贴板");
+        m_statusLabel->setText("识别结果已复制到剪贴板");
+        ElaMessageBar::success(ElaMessageBarType::TopRight,
+                               "已复制", "识别结果已放入剪贴板。", 1800, this);
     }
 }
 
-void OcrWindow::closeEvent(QCloseEvent* event)
+OcrWindow::~OcrWindow()
 {
-    // UX 原则：关闭窗口必须立即生效，绝不阻塞主线程、绝不强杀线程
-    // （QThread::terminate 若落在 OcrEngine::extractText 持锁阶段，会损坏进程级
-    //  单例的互斥锁，导致之后所有 OCR/翻译永久死锁）。
-    // 处理方式：断开回写信号，让 worker 在后台自然跑完；线程结束后对象自清理。
+    releaseWorker();
+}
+
+void OcrWindow::releaseWorker()
+{
+    // Tesseract 识别不能安全强杀；丢弃结果，由任务自然结束后释放引擎。
     if (m_workerThread) {
-        if (m_worker) {
-            // 无条件断开回写连接：即使线程已结束但 finished 事件仍在队列，
-            // 窗口销毁后也不能再触发 onResult/onError（否则 use-after-free）。
-            disconnect(m_worker, nullptr, this, nullptr);
-        }
+        disconnect(m_resultConnection);
+        disconnect(m_errorConnection);
         if (m_workerThread->isRunning()) {
             SNAP_LOG_INFO("OcrWindow: 关闭时识别仍在进行，已转后台完成，结果将被丢弃");
             m_workerThread->quit();
@@ -214,9 +244,13 @@ void OcrWindow::closeEvent(QCloseEvent* event)
                     m_workerThread, &QObject::deleteLater);
         }
         m_workerThread = nullptr;
-        m_worker = nullptr;
     }
 
+}
+
+void OcrWindow::closeEvent(QCloseEvent* event)
+{
+    releaseWorker();
     emit closed();
-    QWidget::closeEvent(event);
+    ElaWindow::closeEvent(event);
 }

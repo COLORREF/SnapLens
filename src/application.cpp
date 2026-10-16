@@ -10,12 +10,12 @@
 #include "notify/notify_manager.h"
 #include "ui/tray_icon.h"
 #include "ui/pin_window.h"
-#include "ui/settings_dialog.h"
-#include "ui/setup_wizard.h"
+#include "ui/settings_view.h"
+#include "ui/snapkit.h"
 #include "capture/snip_session.h"
 #include "translate/translator.h"
 #include "translate/translate_window.h"
-#include "translate/main_window.h"
+#include "ui/main_window.h"
 #include "ocr/ocr_engine.h"
 #include "ocr/ocr_window.h"
 #include "platform/platform_base.h"
@@ -25,7 +25,6 @@
 #include <QClipboard>
 #include <QDir>
 #include <QKeySequence>
-#include <QMessageBox>
 #include <QStandardPaths>
 #include <QDateTime>
 #include <QFileInfo>
@@ -40,13 +39,10 @@ AppController::AppController(QApplication* app, QObject* parent)
 {
     _notifyManager = new NotifyManager();
 
-    if (!Settings::configFileExists()) {
-        runSetupWizard();
-    } else {
-        _settings = new Settings(Settings::load());
-        _notifyManager->setSettings(_settings);
-        initAfterSettings();
-    }
+    _settings = new Settings(Settings::load());
+    _notifyManager->setSettings(_settings);
+    SnapUi::applyThemeMode(SnapUi::themeModeFromString(_settings->theme_mode));
+    initAfterSettings();
 }
 
 AppController::~AppController()
@@ -55,23 +51,36 @@ AppController::~AppController()
         m_hotkey->stop();
     }
     if (_session) {
-        _session->close();
-        _session->deleteLater();
+        auto* session = _session;
+        _session = nullptr;
+        disconnect(session, nullptr, this, nullptr);
+        session->close();
+        delete session;
     }
     cleanupTempDir();
 }
 
-void AppController::runSetupWizard()
+void AppController::createMainWindowIfNeeded()
 {
-    SetupWizard wizard(_notifyManager);
-    if (wizard.exec() == QWizard::Accepted) {
-        _settings = new Settings(wizard.buildSettings());
-        _settings->save();
-        _notifyManager->setSettings(_settings);
-        initAfterSettings();
+    if (m_mainWindow) return;
+    m_mainWindow = new MainWindow(_settings, _notifyManager, _settings->app_mode);
+    connect(m_mainWindow, &MainWindow::settingsSaved,
+            this, &AppController::applySettingsAfterSave);
+    connect(m_mainWindow, &MainWindow::snipRequested, this, &AppController::startSnip);
+    connect(m_mainWindow, &MainWindow::quitRequested, this, &AppController::shutdown);
+    _notifyManager->setDefaultParent(m_mainWindow);
+}
+
+void AppController::showMainWindow()
+{
+    createMainWindowIfNeeded();
+    if (m_mainWindow->isMinimized()) {
+        m_mainWindow->showNormal();
     } else {
-        m_cancelled = true;
+        m_mainWindow->show();
     }
+    m_mainWindow->raise();
+    m_mainWindow->activateWindow();
 }
 
 void AppController::initAfterSettings()
@@ -90,17 +99,8 @@ void AppController::initAfterSettings()
     connect(m_tray, &TrayIcon::quitRequested, this, &AppController::quitApp);
     connect(m_tray, &TrayIcon::modeSwitchRequested, this, &AppController::switchMode);
     connect(m_tray, &TrayIcon::translateRequested, this, [this]() {
-        if (!m_mainWindow) {
-            m_mainWindow = new MainWindow(_settings, _notifyManager, _settings->app_mode);
-            connect(m_mainWindow, &MainWindow::settingsRequested, this, &AppController::openSettings);
-        }
-        if (m_mainWindow->isMinimized()) {
-            m_mainWindow->showNormal();
-        } else {
-            m_mainWindow->show();
-        }
-        m_mainWindow->raise();
-        m_mainWindow->activateWindow();
+        // 主窗口按需创建；设置随窗口一起出现（窗口内已是普通页面）
+        showMainWindow();
     });
 
     // Register hotkey
@@ -127,25 +127,17 @@ void AppController::initAfterSettings()
         _settings->log_error_enabled
     );
 
-    // Set up notify manager default parent
-    if (m_mainWindow) {
-        _notifyManager->setDefaultParent(m_mainWindow);
-    }
-
-    // Create main window based on app mode
-    if (_settings->app_mode == "translate") {
-        m_mainWindow = new MainWindow(_settings, _notifyManager, _settings->app_mode);
-        connect(m_mainWindow, &MainWindow::settingsRequested, this, &AppController::openSettings);
-        _notifyManager->setDefaultParent(m_mainWindow);
-        m_mainWindow->show();
+    // A missing tray must never leave a running app without an entry point.
+    if (_settings->app_mode == "translate" || !QSystemTrayIcon::isSystemTrayAvailable()) {
+        showMainWindow();
     } else {
-        // Create main window lazily; setDefaultParent will be called when created
+        // 截图模式：主窗口按需创建，需要时从托盘打开
     }
 }
 
 void AppController::startSnip()
 {
-    if (_session) {
+    if (_session || m_shuttingDown) {
         SNAP_LOG_DEBUG("startSnip: session already active, ignoring");
         return;
     }
@@ -214,6 +206,15 @@ void AppController::onCopy(const QPixmap& pixmap)
 
 void AppController::onTranslate(const QPixmap& pixmap)
 {
+    if (!ensureOcrReady()) { m_pendingTranslation = pixmap; return; }
+    if (_settings->ai_api_key.trimmed().isEmpty() || _settings->ai_model.trimmed().isEmpty()) {
+        m_pendingTranslation = pixmap;
+        showMainWindow();
+        m_mainWindow->showSettings("ai");
+        _notifyManager->info("配置 AI 服务", "填写 API Key 与模型并保存后，再使用截图翻译。保存后将继续处理本次截图。", m_mainWindow);
+        return;
+    }
+    m_pendingTranslation = {};
     bool autoTranslate = !_settings->ai_confirm_before_translate;
 
     // 安全替换窗口（防御 close() 同步触发 closed 信号的重入副作用）：
@@ -237,8 +238,26 @@ void AppController::onTranslate(const QPixmap& pixmap)
     m_translateWin->show();
 }
 
+bool AppController::ensureOcrReady()
+{
+    QString dir = _settings->ocr_tessdata_dir.trimmed();
+    if (dir.isEmpty()) dir = OcrEngine::findTessdataDir();
+    if (!dir.isEmpty() && QDir(dir).entryList({"*.traineddata"}, QDir::Files).isEmpty()
+        && QDir(dir + "/tessdata").exists()) dir += "/tessdata";
+    bool ready = !dir.isEmpty() && !_settings->ai_ocr_langs.trimmed().isEmpty();
+    for (const auto& lang : _settings->ai_ocr_langs.split('+', Qt::SkipEmptyParts))
+        ready = ready && QFileInfo(QDir(dir).filePath(lang + ".traineddata")).isFile();
+    if (ready) return true;
+    showMainWindow();
+    m_mainWindow->showSettings("ocr");
+    _notifyManager->info("配置文字识别", "请安装所选语言包并保存设置，随后继续处理本次截图。", m_mainWindow);
+    return false;
+}
+
 void AppController::onOcr(const QPixmap& pixmap)
 {
+    if (!ensureOcrReady()) { m_pendingOcr = pixmap; return; }
+    m_pendingOcr = {};
     // 同 onTranslate：先取出旧指针并置空成员，断开其信号连接，
     // 再 close + deleteLater，避免 close() 同步触发 closed 信号
     // 将成员置空后对空指针调用 deleteLater()（未定义行为）。
@@ -259,66 +278,56 @@ void AppController::onOcr(const QPixmap& pixmap)
 
 void AppController::openSettings()
 {
-    QString oldAppMode = _settings->app_mode;
+    // 设置已是主窗口内的一个页面：打开窗口并切到该页，不再弹独立对话框。
+    showMainWindow();
+    m_mainWindow->showSettings();
+}
 
-    SettingsDialog dlg(_settings, _notifyManager);
-    if (dlg.exec() == QDialog::Accepted) {
-        // Save settings to disk
-        _settings->save();
-
-        // Re-apply hotkey
-        if (m_hotkey) {
-            m_hotkey->stop();
-            bool ok = m_hotkey->start(_settings->hotkey);
-            QKeySequence ks(_settings->hotkey);
-            QString native = ks.toString(QKeySequence::NativeText);
-            if (m_tray) {
-                m_tray->setHotkeyText(native);
-            }
-            if (!ok) {
-                _notifyManager->notify("hotkey_fail", "SnapLens 截图",
-                    QString("快捷键 %1 注册失败，可能被其它程序占用，请在设置中更换。").arg(native));
-            }
-        }
-
-        // Re-apply log levels
-        LogManager::instance().applySettings(
-            _settings->log_debug_enabled,
-            _settings->log_info_enabled,
-            _settings->log_warning_enabled,
-            _settings->log_error_enabled
-        );
-
-        // Handle app mode change
-        if (_settings->app_mode != oldAppMode) {
-            if (_settings->app_mode == "translate") {
-                if (!m_mainWindow) {
-                    m_mainWindow = new MainWindow(_settings, _notifyManager, _settings->app_mode);
-                    connect(m_mainWindow, &MainWindow::settingsRequested, this, &AppController::openSettings);
-                }
-                m_mainWindow->show();
-                m_mainWindow->raise();
-                m_mainWindow->activateWindow();
-            } else {
-                if (m_mainWindow) {
-                    m_mainWindow->hide();
-                }
-            }
-        }
-
-        // Update tray mode text
+void AppController::applySettingsAfterSave()
+{
+    if (!m_pendingTranslation.isNull()) {
+        const QPixmap pending = m_pendingTranslation;
+        onTranslate(pending);
+    }
+    if (!m_pendingOcr.isNull()) {
+        const QPixmap pending = m_pendingOcr;
+        onOcr(pending);
+    }
+    // Re-apply hotkey
+    if (m_hotkey) {
+        m_hotkey->stop();
+        bool ok = m_hotkey->start(_settings->hotkey);
+        QKeySequence ks(_settings->hotkey);
+        QString native = ks.toString(QKeySequence::NativeText);
         if (m_tray) {
-            m_tray->setMode(_settings->app_mode);
+            m_tray->setHotkeyText(native);
         }
+        if (!ok) {
+            _notifyManager->notify("hotkey_fail", "SnapLens 截图",
+                QString("快捷键 %1 注册失败，可能被其它程序占用，请在设置中更换。").arg(native));
+        }
+    }
 
-        // 轻提示：保存设置时仍有 OCR/翻译任务在运行 → 修改将在下次任务生效
-        // （配置以快照方式在任务启动时读取，运行中的任务不受影响）
-        if ((m_translateWin && m_translateWin->isBusy())
-            || (m_ocrWin && m_ocrWin->isBusy())
-            || (m_mainWindow && m_mainWindow->isBusy())) {
-            _notifyManager->notify("settings_deferred", "SnapLens 设置",
-                "有任务正在进行，配置修改将在下次 OCR/翻译时生效。");
-        }
+    // Re-apply log levels
+    LogManager::instance().applySettings(
+        _settings->log_debug_enabled,
+        _settings->log_info_enabled,
+        _settings->log_warning_enabled,
+        _settings->log_error_enabled
+    );
+
+    // Update tray mode text
+    if (m_tray) {
+        m_tray->setMode(_settings->app_mode);
+    }
+
+    // 轻提示：保存设置时仍有 OCR/翻译任务在运行 → 修改将在下次任务生效
+    // （配置以快照方式在任务启动时读取，运行中的任务不受影响）
+    if ((m_translateWin && m_translateWin->isBusy())
+        || (m_ocrWin && m_ocrWin->isBusy())
+        || (m_mainWindow && m_mainWindow->isBusy())) {
+        _notifyManager->notify("settings_deferred", "SnapLens 设置",
+            "有任务正在进行，配置修改将在下次 OCR/翻译时生效。");
     }
 }
 
@@ -331,13 +340,7 @@ void AppController::switchMode()
         }
     } else {
         _settings->app_mode = "translate";
-        if (!m_mainWindow) {
-            m_mainWindow = new MainWindow(_settings, _notifyManager, _settings->app_mode);
-            connect(m_mainWindow, &MainWindow::settingsRequested, this, &AppController::openSettings);
-        }
-        m_mainWindow->show();
-        m_mainWindow->raise();
-        m_mainWindow->activateWindow();
+        showMainWindow();
     }
     _settings->save();
     if (m_tray) {
@@ -347,10 +350,22 @@ void AppController::switchMode()
 
 void AppController::quitApp()
 {
-    // Confirmation dialog (matching Python behavior)
+    if (m_quitPromptOpen || m_shuttingDown) return;
+    m_quitPromptOpen = true;
+    showMainWindow();
+    // The tray exit action confirms once; the window decision already confirmed.
     bool confirmed = _notifyManager->confirm("退出确认", "确定要退出 SnapLens 吗？");
+    m_quitPromptOpen = false;
     if (!confirmed) return;
 
+    shutdown();
+}
+
+void AppController::shutdown()
+{
+    if (m_shuttingDown) return;
+    m_shuttingDown = true;
+    if (_session) _session->close();
     // Close all pin windows
     // 先取出并清空列表，再逐一关闭：close() 会同步触发 closed 信号
     // （其 lambda 执行 m_pins.removeAll），若边遍历边修改容器会迭代器失效并漏关窗口。
@@ -363,7 +378,7 @@ void AppController::quitApp()
     // Close translate/ocr windows
     if (m_translateWin) m_translateWin->close();
     if (m_ocrWin) m_ocrWin->close();
-    if (m_mainWindow) m_mainWindow->close();
+    if (m_mainWindow) m_mainWindow->prepareForQuit();
 
     // Stop hotkey
     if (m_hotkey) {

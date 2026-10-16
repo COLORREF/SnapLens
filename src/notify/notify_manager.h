@@ -18,8 +18,8 @@ class QDialog;
 
 enum class Channel {
     Tray   = 1 << 0,  // 系统托盘通知（QSystemTrayIcon::showMessage）
-    Dialog = 1 << 1,  // 模态弹窗（QMessageBox）
-    Log    = 1 << 2,  // 控制台日志（SNAP_LOG_* 宏）
+    Dialog = 1 << 1,  // Ela 提示界面
+    Log    = 1 << 2,  // spdlog 日志（SNAP_LOG_* 宏）
 };
 
 Q_DECLARE_FLAGS(Channels, Channel)
@@ -92,6 +92,7 @@ inline const QVector<NotifyDef> NOTIFY_DEFS = {
 // NotifyManager — 通知系统统一入口
 // ============================================================================
 
+/** @brief 按通知注册表分发日志、托盘和界面提示，仅在 GUI 线程调用。 */
 class NotifyManager {
 public:
     NotifyManager() = default;

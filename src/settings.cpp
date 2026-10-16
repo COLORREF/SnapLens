@@ -4,6 +4,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QSaveFile>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -38,16 +39,14 @@ static QString resolveConfigDir()
     return programDir();
 }
 
-static void writeBootstrap(const QString& customDir)
+static bool writeBootstrap(const QString& customDir)
 {
-    QString bootstrap = QDir(programDir()).filePath(BOOTSTRAP_FILE);
-    QFile f(bootstrap);
-    if (f.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        f.write(customDir.toUtf8());
-        f.close();
-    } else {
-        SNAP_LOG_WARNING("写入引导文件失败: " + f.errorString());
-    }
+    const QString bootstrap = QDir(programDir()).filePath(BOOTSTRAP_FILE);
+    if (customDir.isEmpty())
+        return !QFile::exists(bootstrap) || QFile::remove(bootstrap);
+    QSaveFile f(bootstrap);
+    const QByteArray bytes = customDir.toUtf8();
+    return f.open(QIODevice::WriteOnly) && f.write(bytes) == bytes.size() && f.commit();
 }
 
 static QString defaultSaveDir()
@@ -160,25 +159,24 @@ void Settings::updateFromDict(const QJsonObject& data)
     }
 }
 
-void Settings::save() const
+bool Settings::save() const
 {
-    QString targetDir = config_dir.isEmpty() ? programDir() : config_dir;
-    QString path = QDir(targetDir).filePath(SETTINGS_FILE);
-
-    QDir().mkpath(targetDir);
-
-    QJsonDocument doc(toDict());
-    QFile f(path);
-    if (!f.open(QIODevice::WriteOnly)) {
+    if (!m_persistenceEnabled) return true;
+    const QString targetDir = config_dir.isEmpty() ? programDir() : config_dir;
+    const QString path = QDir(targetDir).filePath(SETTINGS_FILE);
+    if (!QDir().mkpath(targetDir)) return false;
+    QSaveFile f(path);
+    const QByteArray bytes = QJsonDocument(toDict()).toJson(QJsonDocument::Indented);
+    if (!f.open(QIODevice::WriteOnly) || f.write(bytes) != bytes.size() || !f.commit()) {
         SNAP_LOG_ERROR(QString("保存设置失败 (%1): %2").arg(path, f.errorString()));
-        return;
+        return false;
     }
-    f.write(doc.toJson(QJsonDocument::Indented));
-    f.close();
-
-    if (!config_dir.isEmpty()) {
-        writeBootstrap(config_dir);
+    // Clearing a custom directory must also clear the old bootstrap pointer.
+    if (!writeBootstrap(config_dir)) {
+        SNAP_LOG_ERROR("更新配置目录指向失败");
+        return false;
     }
+    return true;
 }
 
 QJsonObject Settings::defaultsDict()

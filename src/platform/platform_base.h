@@ -93,6 +93,8 @@ public:
 
     // 返回虚拟桌面物理像素坐标（与截图像素坐标系一致）。
     virtual void getPos(int& x, int& y) = 0;
+    // 移动到虚拟桌面的物理像素坐标；不支持精确定位的平台返回 false。
+    virtual bool setPos(int, int) { return false; }
 };
 
 class NullCursorProvider : public ICursorProvider {

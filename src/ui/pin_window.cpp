@@ -21,6 +21,7 @@
 #include <QTimer>
 #include <QCursor>
 #include <QEnterEvent>
+#include "ElaWidgetTools.hpp"
 
 PinWindow::PinWindow(const QPixmap& pixmap, const QString& saveDir, QWidget* parent)
     : QWidget(parent, Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Window)
@@ -35,22 +36,27 @@ PinWindow::PinWindow(const QPixmap& pixmap, const QString& saveDir, QWidget* par
 
     m_closeBtn = new QToolButton(this);
     m_closeBtn->setText(QString::fromUtf8("\u00d7"));
-    m_closeBtn->setFixedSize(22, 22);
+    m_closeBtn->setFixedSize(24, 24);
     m_closeBtn->setCursor(Qt::ArrowCursor);
-    // 默认：半透明灰色背景 + 红色 ×（不遮挡图片内容）；
-    // hover：红色背景 + 白色 ×，明确可点击反馈。
+    // 默认：半透明深色底 + 白色 ×，不遮挡图片内容；
+    // hover：Windows 语义的关闭红 + 白色 ×，明确可点击反馈。
     m_closeBtn->setStyleSheet(
         "QToolButton {"
-        "  background: rgba(120, 120, 120, 110);"
-        "  color: #E53935;"
-        "  border: none;"
+        "  background: rgba(32, 32, 32, 150);"
+        "  color: #F2F2F2;"
+        "  border: 1px solid rgba(255, 255, 255, 40);"
+        "  border-radius: 6px;"
         "  font-size: 15px;"
         "  font-weight: bold;"
-        "  border-radius: 3px;"
+        "  padding-bottom: 2px;"
         "}"
         "QToolButton:hover {"
-        "  background: rgba(220, 60, 60, 200);"
+        "  background: rgba(196, 43, 28, 235);"
+        "  border-color: rgba(255, 255, 255, 70);"
         "  color: white;"
+        "}"
+        "QToolButton:pressed {"
+        "  background: rgba(160, 32, 20, 245);"
         "}"
     );
     connect(m_closeBtn, &QToolButton::clicked, this, &QWidget::close);
@@ -162,11 +168,12 @@ void PinWindow::closeEvent(QCloseEvent* event)
 
 void PinWindow::contextMenuEvent(QContextMenuEvent* event)
 {
-    QMenu menu(this);
-    QAction* copyAction = menu.addAction("复制图片");
-    QAction* saveAction = menu.addAction("另存为...");
+    ElaMenu menu(this);
+    menu.setMenuItemHeight(34);
+    QAction* copyAction = menu.addElaIconAction(ElaIconType::Copy, "复制图片");
+    QAction* saveAction = menu.addElaIconAction(ElaIconType::FloppyDisk, "另存为...");
     menu.addSeparator();
-    QAction* closeAction = menu.addAction("关闭");
+    QAction* closeAction = menu.addElaIconAction(ElaIconType::Xmark, "关闭");
 
     QAction* chosen = menu.exec(event->globalPos());
     if (chosen == copyAction) {

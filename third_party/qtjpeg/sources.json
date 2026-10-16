@@ -1,0 +1,30 @@
+{
+  "main.cpp": {
+    "url": "https://raw.githubusercontent.com/qt/qtbase/v6.11.2/src/plugins/imageformats/jpeg/main.cpp",
+    "sha256": "fbb3084d7e47df60893229380013be720952f75c706d7ba1536aa0f2d7574f21"
+  },
+  "qjpeghandler.cpp": {
+    "url": "https://raw.githubusercontent.com/qt/qtbase/v6.11.2/src/plugins/imageformats/jpeg/qjpeghandler.cpp",
+    "sha256": "370384a6e3c413aad2727dce0a53d0e8382e080aa3441bc15a7e6c8224ecfee9"
+  },
+  "qjpeghandler_p.h": {
+    "url": "https://raw.githubusercontent.com/qt/qtbase/v6.11.2/src/plugins/imageformats/jpeg/qjpeghandler_p.h",
+    "sha256": "4c70b3071a8999fa30181778d10e03de2ad021e0504f26b6ebd970877f06567f"
+  },
+  "jpeg.json": {
+    "url": "https://raw.githubusercontent.com/qt/qtbase/v6.11.2/src/plugins/imageformats/jpeg/jpeg.json",
+    "sha256": "4ea3a23ab0fd65bb2295d0cd6567c76775f409abc052122764b494656c5dd0e5"
+  },
+  "LICENSES/LGPL-3.0-only.txt": {
+    "url": "https://raw.githubusercontent.com/qt/qtbase/v6.11.2/LICENSES/LGPL-3.0-only.txt",
+    "sha256": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768"
+  },
+  "LICENSES/GPL-3.0-only.txt": {
+    "url": "https://raw.githubusercontent.com/qt/qtbase/v6.11.2/LICENSES/GPL-3.0-only.txt",
+    "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+  },
+  "LICENSES/GPL-2.0-only.txt": {
+    "url": "https://raw.githubusercontent.com/qt/qtbase/v6.11.2/LICENSES/GPL-2.0-only.txt",
+    "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643"
+  }
+}

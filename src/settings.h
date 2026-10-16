@@ -94,6 +94,8 @@ inline const QVector<SettingDef> SETTING_DEFS = {
     {"crosshair_enabled",  true},
     // ---- 系统光标 ----
     {"cursor_enabled",     false},
+    {"cursor_keyboard_enabled", true},
+    {"cursor_keyboard_mode", "arrows", validators::oneOf({"arrows", "wasd", "both"})},
     // ---- 放大镜 ----
     {"magnifier_enabled",        true},
     {"magnifier_zoom",           4.0,       validators::clampFloat(4.0, 20.0)},
@@ -119,12 +121,14 @@ inline const QVector<SettingDef> SETTING_DEFS = {
     {"coord_label_text_color", "#FFFFFF"},
     {"coord_label_text_alpha", 100,       validators::clampInt(10, 100)},
     {"coord_label_bg_color",   "#000000"},
-    {"coord_label_bg_alpha",   100,       validators::clampInt(10, 100)},
+    {"coord_label_bg_alpha",   67,        validators::clampInt(10, 100)},
     {"color_label_enabled",    true},
     {"color_label_text_color", "#FFFFFF"},
     {"color_label_text_alpha", 100,       validators::clampInt(10, 100)},
     {"color_label_bg_color",   "#000000"},
-    {"color_label_bg_alpha",   100,       validators::clampInt(10, 100)},
+    {"color_label_bg_alpha",   67,        validators::clampInt(10, 100)},
+    {"color_swatch_enabled",   true},
+    {"color_format_key",       "Shift"},
     {"color_format",           "rgb",    validators::oneOf({"rgb", "hex"})},
     {"copy_color_key",         "C"},
     {"copy_hex_prefix",        true},
@@ -153,10 +157,11 @@ inline const QVector<SettingDef> SETTING_DEFS = {
     {"log_error_enabled",        true},
     // ---- AI 翻译 ----
     {"ai_provider",  "deepseek", validators::oneOf({
-        "deepseek", "openai", "qwen", "kimi", "glm", "hunyuan", "doubao", "qianfan"})},
+        "deepseek", "openai", "qwen", "kimi", "glm", "hunyuan", "doubao", "qianfan", "custom"})},
     {"ai_api_key",          ""},
     {"ai_api_base",         "https://api.deepseek.com/v1"},
     {"ai_model",            ""},  // 模型名称（用户手动输入或通过 API 自动获取）
+    {"ai_custom_models",    ""},  // 自定义服务的候选模型，逗号或换行分隔
     {"ai_target_lang",      "简体中文"},
     {"ai_timeout",          30,     validators::clampInt(5, 120)},
     {"ai_temperature",      0.1,    validators::clampFloat(0.0, 2.0)},
@@ -184,6 +189,9 @@ inline const QVector<SettingDef> SETTING_DEFS = {
     // translate = 翻译模式（启动时显示文本翻译窗口，截图通过热键触发）
     // screenshot = 截图模式（后台静默运行，仅托盘；翻译通过截图工具条或托盘菜单触发）
     {"app_mode", "translate", validators::oneOf({"translate", "screenshot"})},
+    // ---- 外观 ----
+    // system = 跟随系统深浅色；light / dark = 强制指定
+    {"theme_mode", "system", validators::oneOf({"system", "light", "dark"})},
     // ---- 元数据 ----
     {"settings_version", SETTINGS_VERSION},
 };
@@ -210,6 +218,8 @@ inline const QVector<SettingDef> SETTING_DEFS = {
     X(bool, crosshair_invert) \
     X(bool, crosshair_enabled) \
     X(bool, cursor_enabled) \
+    X(bool, cursor_keyboard_enabled) \
+    X(QString, cursor_keyboard_mode) \
     X(bool, magnifier_enabled) \
     X(double, magnifier_zoom) \
     X(double, magnifier_fixed_zoom) \
@@ -239,6 +249,8 @@ inline const QVector<SettingDef> SETTING_DEFS = {
     X(int, color_label_text_alpha) \
     X(QString, color_label_bg_color) \
     X(int, color_label_bg_alpha) \
+    X(bool, color_swatch_enabled) \
+    X(QString, color_format_key) \
     X(QString, color_format) \
     X(QString, copy_color_key) \
     X(bool, copy_hex_prefix) \
@@ -264,6 +276,7 @@ inline const QVector<SettingDef> SETTING_DEFS = {
     X(QString, ai_api_key) \
     X(QString, ai_api_base) \
     X(QString, ai_model) \
+    X(QString, ai_custom_models) \
     X(QString, ai_target_lang) \
     X(int, ai_timeout) \
     X(double, ai_temperature) \
@@ -284,12 +297,16 @@ inline const QVector<SettingDef> SETTING_DEFS = {
     X(double, right_panel_ratio) \
     X(double, main_split_ratio) \
     X(QString, app_mode) \
+    X(QString, theme_mode) \
     X(int, settings_version)
 
 // ============================================================================
 // Settings 类
 // ============================================================================
 
+/** @brief 表驱动的配置快照；持久化采用 QSaveFile 原子替换。
+ * @details 实例不是并发容器，后台任务应在 GUI 线程构造时复制所需字段。
+ */
 class Settings {
 public:
     // 从 dict 构造（所有字段由 SETTING_DEFS 驱动）
@@ -301,8 +318,9 @@ public:
     // 从 dict 批量更新
     void updateFromDict(const QJsonObject& data);
 
-    // 持久化
-    void save() const;
+    /** @brief 保存配置并更新目录指向；诊断模式禁用持久化时直接成功返回。 */
+    bool save() const;
+    void setPersistenceEnabled(bool enabled) { m_persistenceEnabled = enabled; }
 
     // 工厂方法
     static QJsonObject defaultsDict();
@@ -316,6 +334,9 @@ public:
 
     // 特殊字段：动态默认值
     QString save_dir;
+
+private:
+    bool m_persistenceEnabled = true;
 };
 
 #endif // SNAPLENS_SETTINGS_H

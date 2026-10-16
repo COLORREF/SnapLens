@@ -24,12 +24,8 @@ class TranslateWindow;
 class OcrWindow;
 class PinWindow;
 
-/*
- * 应用编排器：首次运行弹出引导向导，按模式显示/隐藏翻译窗口，驻留托盘。
- * 支持两种模式：
- *  - translate（翻译模式）：启动时显示文本翻译窗口
- *  - screenshot（截图模式）：后台静默运行，仅托盘图标
- *  两种模式均可通过快捷键截图，均可使用翻译功能。
+/** @brief 应用编排器，负责工具入口、功能前置检查、截图动作及退出流程。
+ * @details 所有成员操作在 GUI 线程进行，识别和翻译任务使用自己的配置快照。
  */
 class AppController : public QObject
 {
@@ -40,12 +36,13 @@ public:
 
     ~AppController() override;
 
-    bool isCancelled() const { return m_cancelled; }
-
 private slots:
     void startSnip();
 
     void openSettings();
+
+    /// 设置页点击「保存设置」后的重新应用（热键 / 日志级别 / 启动模式 / 托盘文案）。
+    void applySettingsAfterSave();
 
     void switchMode();
 
@@ -54,7 +51,15 @@ private slots:
 private:
     void initAfterSettings();
 
-    void runSetupWizard();
+    /** @brief 幂等退出：关闭工具窗口、请求取消任务、释放热键后退出事件循环。 */
+    void shutdown();
+    bool ensureOcrReady();
+
+    /// 按需创建主窗口（并接好它与本对象的信号）。
+    void createMainWindowIfNeeded();
+
+    /// 显示并激活主窗口。
+    void showMainWindow();
 
     void onSave(const QPixmap &pixmap);
 
@@ -82,7 +87,10 @@ private:
     TranslateWindow *m_translateWin = nullptr;
     OcrWindow *m_ocrWin = nullptr;
     QList<PinWindow *> m_pins;
-    bool m_cancelled = false;
+    bool m_quitPromptOpen = false;
+    bool m_shuttingDown = false;
+    QPixmap m_pendingTranslation;
+    QPixmap m_pendingOcr;
 };
 
 #endif // SNAPLENS_APPLICATION_H

@@ -11,16 +11,17 @@
 #include <functional>
 #include <atomic>
 
-// ============================================================================
-// ApiClient — OpenAI-compatible API 客户端（基于 Qt Network）
-// ============================================================================
-
+/**
+ * @brief OpenAI 兼容网络客户端，负责请求、SSE 解析、超时和取消。
+ * @details 必须在创建对象的线程调用。同步接口使用局部事件循环；UI 获取模型列表
+ * 应使用 listModelsAsync。返回码：0 成功，-1 请求/响应失败，-2 超时，-3 取消。
+ */
 class ApiClient : public QObject
 {
     Q_OBJECT
 
 public:
-    // 流式回调：content累积文本, thinking累积文本, isFinal, errorCode, errorMsg
+    /// 回调接收累计正文、累计思考文本、结束标志及错误信息。
     using StreamChunkCallback = std::function<void(
         const QString& content, const QString& thinking,
         bool isFinal, int errorCode, const QString& errorMsg)>;
@@ -51,7 +52,9 @@ public:
                           double frequencyPenalty = 0.0, double presencePenalty = 0.0,
                           int seed = 0, std::atomic<int>* cancelFlag = nullptr);
 
-    // 流式聊天补全（返回 errorCode，0=成功）
+    /** @brief 同步消费 SSE 响应；每次内容更新回调，结束时恰好一次 final 回调。
+     * @return 与 final 回调相同的错误码；调用方不应据此重复发送错误通知。
+     */
     int chatCreateStream(const QString& apiKey, const QString& apiBase,
                          const QString& model, const QJsonArray& messages,
                          int timeoutSecs, double temperature, int maxTokens,
@@ -63,14 +66,9 @@ public:
     ModelsResult listModels(const QString& apiKey, const QString& apiBase,
                             int timeoutSecs = 10);
 
-    // 异步获取模型列表（L11：不阻塞 UI）。
-    // 立即返回，结果通过 callback 在主线程（本对象所属线程）回调。
-    // 线程安全语义：
-    //  - 回调连接以 this 为 context —— 本对象析构时连接自动断开，
-    //    reply 作为 m_nam 子对象随之销毁，回调绝不在对象销毁后触发（无 use-after-free）；
-    //  - reply 在成功/超时/失败全部分支 deleteLater（无泄漏）；
-    //  - 超时由 setTransferTimeout 触发（OperationCanceledError → errorCode -2）；
-    //  - 调用方（对话框）析构 = 取消请求，无需手动 abort。
+    /** @brief 异步获取模型列表，在本对象所属线程调用 callback。
+     * @details 对象销毁会断开回调并释放请求；callback 捕获的其他对象须由调用方保证有效。
+     */
     void listModelsAsync(const QString& apiKey, const QString& apiBase,
                          int timeoutSecs,
                          std::function<void(const ModelsResult&)> callback);

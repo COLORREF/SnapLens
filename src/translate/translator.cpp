@@ -46,7 +46,7 @@ void TranslateService::run()
 {
     try {
         // 1. OCR 提取文字
-        OcrEngine& engine = OcrEngine::instance();
+        OcrEngine engine; // 每个任务独立拥有语言配置和原生引擎。
 
         QString tessDir = m_tessdataDir;
         if (tessDir.isEmpty()) {
@@ -90,7 +90,7 @@ void TranslateService::run()
 
         // 2. AI 翻译（使用构造时拷贝的配置快照）
         QString apiKey = m_apiKey;
-        if (apiKey.isEmpty()) {
+        if (apiKey.isEmpty() && providerNeedsApiKey(m_provider)) {
             emit error("API Key 未设置，请在设置中配置");
             return;
         }
@@ -126,7 +126,7 @@ void TranslateService::run()
 
         if (m_streamThinking) {
             // 流式调用 — chatCreateStream 已在回调中累积完整 content
-            int ret = client.chatCreateStream(
+            client.chatCreateStream(
                 apiKey, apiBase, model, messages,
                 m_timeout,
                 m_temperature,
@@ -137,6 +137,7 @@ void TranslateService::run()
                 m_seed,
                 [this](const QString& content, const QString& thinking,
                        bool isFinal, int errorCode, const QString& errorMsg) {
+                    if (m_cancelFlag.load(std::memory_order_relaxed)) return;
                     if (errorCode != 0 && isFinal) {
                         emit error(errorMsg.isEmpty() ? "翻译请求失败" : errorMsg);
                         return;
@@ -151,13 +152,6 @@ void TranslateService::run()
                 &m_cancelFlag
             );
 
-            if (ret != 0) {
-                if (m_cancelFlag.load(std::memory_order_relaxed)) {
-                    SNAP_LOG_INFO("TranslateService: AI 请求已取消（网络已断开），线程退出");
-                    return;
-                }
-                emit error("翻译请求失败");
-            }
         } else {
             // 非流式调用（传入取消标志：窗口关闭/替换时立即 abort 断网）
             auto result = client.chatCreate(
@@ -241,11 +235,6 @@ void TextTranslateService::run()
             return;
         }
 
-        if (m_apiKey.isEmpty()) {
-            emit error("API Key 未设置，请在设置中配置");
-            return;
-        }
-
         QString prompt;
         if (!m_fullPrompt.isEmpty()) {
             prompt = m_fullPrompt;
@@ -267,12 +256,13 @@ void TextTranslateService::run()
         if (m_streamThinking) {
             // 流式调用 — chatCreateStream 已在回调中累积完整 content
             // （传入取消标志：窗口关闭/替换时立即 abort 断网，省 token）
-            int ret = client.chatCreateStream(
+            client.chatCreateStream(
                 m_apiKey, m_apiBase, m_model, messages,
                 m_timeout, m_temperature, m_maxTokens,
                 m_topP, m_frequencyPenalty, m_presencePenalty, m_seed,
                 [this](const QString& content, const QString& thinking,
                        bool isFinal, int errorCode, const QString& errorMsg) {
+                    if (m_cancelFlag.load(std::memory_order_relaxed)) return;
                     if (errorCode != 0 && isFinal) {
                         emit error(errorMsg.isEmpty() ? "翻译请求失败" : errorMsg);
                         return;
@@ -286,13 +276,6 @@ void TextTranslateService::run()
                 },
                 &m_cancelFlag
             );
-            if (ret != 0) {
-                if (m_cancelFlag.load(std::memory_order_relaxed)) {
-                    SNAP_LOG_INFO("TextTranslateService: AI 请求已取消（网络已断开），线程退出");
-                    return;
-                }
-                emit error("翻译请求失败");
-            }
         } else {
             auto result = client.chatCreate(
                 m_apiKey, m_apiBase, m_model, messages,

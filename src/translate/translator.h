@@ -9,10 +9,7 @@
 
 class Settings;
 
-// ============================================================================
-// TranslateService — 后台图片翻译线程
-// ============================================================================
-
+/** @brief 后台图片翻译任务：独立 OCR 引擎、配置快照和可取消的 AI 请求。 */
 class TranslateService : public QThread
 {
     Q_OBJECT
@@ -23,9 +20,7 @@ public:
                      Settings* settings,
                      QObject* parent = nullptr);
 
-    // 请求取消：置位取消标志。run() 在 OCR 后检查（已取消则不发 AI 请求，
-    // 零 token 消耗）；AI 请求阶段由 ApiClient 的 cancelTimer 每 100ms 轮询
-    // 该标志，置位后立即 abort 底层请求并断开网络（关闭窗口/替换时调用）。
+    /** @brief 请求取消；OCR 自然结束后检查，网络阶段以 100ms 间隔检查并中止请求。 */
     void requestCancel() { m_cancelFlag.store(1, std::memory_order_relaxed); }
 
 signals:
@@ -64,10 +59,7 @@ private:
     std::atomic<int> m_cancelFlag{0};
 };
 
-// ============================================================================
-// TextTranslateService — 后台文本翻译线程
-// ============================================================================
-
+/** @brief 后台文本翻译任务，使用构造时传入的不可变配置快照。 */
 class TextTranslateService : public QThread
 {
     Q_OBJECT
