@@ -42,25 +42,40 @@ public:
     explicit ApiClient(QObject* parent = nullptr);
     ~ApiClient() override;
 
+    /** @brief 一次聊天补全请求的全部输入。
+     * @details provider 决定哪些采样/思考字段会被真正发送：各服务商对
+     * OpenAI 兼容字段的支持差异很大，不支持的字段一律不发送（见 providers.h）。
+     */
+    struct ChatParams {
+        QString apiKey;
+        QString apiBase;
+        QString model;
+        QString provider;              // 服务商 ID，用于能力裁剪
+        QJsonArray messages;
+        int timeoutSecs = 30;
+        double temperature = 0.1;
+        int maxTokens = 4096;
+        double topP = 1.0;
+        double frequencyPenalty = 0.0;
+        double presencePenalty = 0.0;
+        int seed = 0;                  // 0 = 不指定
+        QString doSample;              // auto/on/off（仅 GLM 等支持）
+        QString thinking;              // auto/on/off
+        QString reasoningEffort;       // auto = 不发送
+        QStringList stop;              // 停止序列
+        bool streamUsage = true;       // stream_options.include_usage
+        std::atomic<int>* cancelFlag = nullptr;
+    };
+
     // 非流式聊天补全
     // cancelFlag：可选取消标志（原子），非空时每 100ms 轮询一次；
     // 置位则 abort 底层请求并断开网络（用于窗口关闭/替换时立即取消，省 token）。
-    ChatResult chatCreate(const QString& apiKey, const QString& apiBase,
-                          const QString& model, const QJsonArray& messages,
-                          int timeoutSecs = 30, double temperature = 0.1,
-                          int maxTokens = 4096, double topP = 1.0,
-                          double frequencyPenalty = 0.0, double presencePenalty = 0.0,
-                          int seed = 0, std::atomic<int>* cancelFlag = nullptr);
+    ChatResult chatCreate(const ChatParams& params);
 
     /** @brief 同步消费 SSE 响应；每次内容更新回调，结束时恰好一次 final 回调。
      * @return 与 final 回调相同的错误码；调用方不应据此重复发送错误通知。
      */
-    int chatCreateStream(const QString& apiKey, const QString& apiBase,
-                         const QString& model, const QJsonArray& messages,
-                         int timeoutSecs, double temperature, int maxTokens,
-                         double topP, double frequencyPenalty, double presencePenalty,
-                         int seed, StreamChunkCallback callback,
-                         std::atomic<int>* cancelFlag = nullptr);
+    int chatCreateStream(const ChatParams& params, StreamChunkCallback callback);
 
     // 获取模型列表
     ModelsResult listModels(const QString& apiKey, const QString& apiBase,
@@ -74,10 +89,8 @@ public:
                          std::function<void(const ModelsResult&)> callback);
 
 private:
-    QJsonObject buildRequestBody(const QString& model, const QJsonArray& messages,
-                                 int maxTokens, double temperature, double topP,
-                                 double frequencyPenalty, double presencePenalty,
-                                 int seed, bool stream);
+    /// 按 provider 能力构建请求体；stream=true 时附加 stream_options。
+    QJsonObject buildRequestBody(const ChatParams& params, bool stream);
     void setupRequest(QNetworkRequest& req, const QString& apiKey, int timeoutSecs);
     QString parseErrorBody(const QByteArray& body);
     int runEventLoop(QNetworkReply* reply, int timeoutSecs, std::atomic<int>* cancelFlag = nullptr);

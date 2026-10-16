@@ -81,7 +81,8 @@ inline const char* DEFAULT_TEXT_TRANSLATION_PROMPT = R"PROMPT(你是一个{scena
 原文：
 {source_text})PROMPT";
 
-inline const int SETTINGS_VERSION = 1;
+// 2：新增采样开关 / 思考与推理强度 / 停止序列 / 流式用量，并放开输出上限。
+inline const int SETTINGS_VERSION = 2;
 
 inline const QVector<SettingDef> SETTING_DEFS = {
     // ---- 截图 ----
@@ -165,11 +166,22 @@ inline const QVector<SettingDef> SETTING_DEFS = {
     {"ai_target_lang",      "简体中文"},
     {"ai_timeout",          30,     validators::clampInt(5, 120)},
     {"ai_temperature",      0.1,    validators::clampFloat(0.0, 2.0)},
-    {"ai_max_tokens",       4096,   validators::clampInt(1, 8192)},
-    {"ai_top_p",            1.0,    validators::clampFloat(0.0, 1.0)},
+    {"ai_max_tokens",       4096,   validators::clampInt(1, 1048576)},
+    {"ai_top_p",            1.0,    validators::clampFloat(0.01, 1.0)},
     {"ai_frequency_penalty", 0.0,   validators::clampFloat(-2.0, 2.0)},
     {"ai_presence_penalty", 0.0,    validators::clampFloat(-2.0, 2.0)},
     {"ai_seed",             0},     // 0 表示不指定（随机）
+    // 采样总开关（智谱 GLM 的 do_sample）：off 时服务商忽略 temperature/top_p；auto = 不发送，用服务商默认
+    {"ai_do_sample",        "auto", validators::oneOf({"auto", "on", "off"})},
+    // 思考（推理）开关：auto = 不发送，on/off 显式启用或禁用（服务商不支持时忽略）
+    {"ai_thinking",         "auto", validators::oneOf({"auto", "on", "off"})},
+    // 推理强度：auto = 不发送；越界的档位会按服务商支持情况就近映射
+    {"ai_reasoning_effort", "auto", validators::oneOf({
+        "auto", "none", "minimal", "low", "medium", "high", "xhigh", "max"})},
+    // 停止序列：每行一个（各家上限不同，界面按最严的 4 项校验）
+    {"ai_stop",             ""},
+    // 流式响应附带 token 用量（stream_options.include_usage）；个别服务商不支持时可关闭
+    {"ai_stream_usage",     true},
     {"ai_translation_prompt", QString::fromUtf8(DEFAULT_TRANSLATION_PROMPT)},
     {"ai_ocr_langs",        "chi_sim+eng+jpn+kor"},
     {"ai_confirm_before_translate", false},
@@ -285,6 +297,11 @@ inline const QVector<SettingDef> SETTING_DEFS = {
     X(double, ai_frequency_penalty) \
     X(double, ai_presence_penalty) \
     X(int, ai_seed) \
+    X(QString, ai_do_sample) \
+    X(QString, ai_thinking) \
+    X(QString, ai_reasoning_effort) \
+    X(QString, ai_stop) \
+    X(bool, ai_stream_usage) \
     X(QString, ai_translation_prompt) \
     X(QString, ai_ocr_langs) \
     X(bool, ai_confirm_before_translate) \

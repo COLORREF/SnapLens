@@ -14,6 +14,7 @@
 #include <QScreen>
 #include <QScrollArea>
 #include <QSlider>
+#include <QSpinBox>
 #include <QStyleHints>
 #include <QStyle>
 #include <QStyleOption>
@@ -725,6 +726,40 @@ SettingsCard* comboRowData(const QString& title, const QString& description,
     card->addControl(combo);
     applyRowIcon(card, title, icon);
     if (comboOut) *comboOut = combo;
+    return card;
+}
+
+SettingsCard* spinRow(const QString& title, const QString& description,
+                      int value, int lo, int hi, int step,
+                      const QString& suffix, QSpinBox** spinOut,
+                      QWidget* parent, ElaIconType::IconName icon)
+{
+    auto* card = new SettingsCard(title, description, parent);
+    auto* host = new QWidget(card);
+    auto* layout = new QHBoxLayout(host);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(8);
+
+    // 用 Ela 自带的 spinbox 以跟随主题；默认固定尺寸，这里放开以便随内容伸缩。
+    auto* spin = new ElaSpinBox(host);
+    spin->setButtonMode(ElaSpinBoxType::Side);
+    spin->setRange(lo, hi);
+    spin->setSingleStep(step > 0 ? step : 1);
+    spin->setValue(qBound(lo, value, hi));
+    // ElaSpinBox 构造时锁死 115x35，这里放开宽度以便显示 6~7 位 token 数。
+    spin->setMinimumWidth(160);
+    spin->setMaximumWidth(QWIDGETSIZE_MAX);
+    spin->setAccelerated(true);
+    spin->setGroupSeparatorShown(true);
+    layout->addWidget(spin);
+    if (!suffix.isEmpty()) {
+        auto* unit = new ElaText(suffix, host);
+        unit->setTextPixelSize(12);
+        layout->addWidget(unit);
+    }
+    card->addControl(host);
+    applyRowIcon(card, title, icon);
+    if (spinOut) *spinOut = spin;
     return card;
 }
 

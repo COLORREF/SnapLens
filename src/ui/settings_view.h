@@ -31,6 +31,7 @@ class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
 class QSlider;
+class QSpinBox;
 class QStackedWidget;
 class QVBoxLayout;
 class QNetworkAccessManager;
@@ -133,6 +134,8 @@ private:
     void refreshScreenshotPage();
     void refreshMagnifierPage();
     void refreshLabelsPage();
+    /// 按当前服务商能力刷新 AI 参数页（支持与否、取值范围、来源文档提示）。
+    void refreshAiPage();
 
     // ---- 表驱动重置（对齐 Python `_reset_map`）----
     struct ResetItem {
@@ -255,13 +258,31 @@ private:
     QPushButton*       m_fetchModelsBtn    = nullptr;
     ElaText*           m_aiErrorLabel      = nullptr;
     QWidget*           m_aiErrorRow        = nullptr;
-    QSlider*           m_aiTimeout         = nullptr;
+    ElaText*           m_aiParamHint       = nullptr;   // 服务商能力/来源文档提示条
+    QWidget*           m_aiParamHintRow    = nullptr;
+    QSpinBox*          m_aiTimeout         = nullptr;
     QSlider*           m_aiTemperature     = nullptr;
-    QSlider*           m_aiMaxTokens       = nullptr;
+    QSpinBox*          m_aiMaxTokens       = nullptr;
+    QWidget*           m_aiMaxTokensCard   = nullptr;   // 输出上限行（提示字段名/上限）
+    QWidget*           m_aiDoSampleCard    = nullptr;   // 采样总开关行（仅 GLM do_sample）
     QSlider*           m_aiTopP            = nullptr;
     QSlider*           m_aiFrequencyPenalty = nullptr;
     QSlider*           m_aiPresencePenalty = nullptr;
     QLineEdit*         m_aiSeedEdit        = nullptr;
+    QComboBox*         m_aiDoSampleCombo   = nullptr;
+    QComboBox*         m_aiThinkingCombo   = nullptr;
+    QComboBox*         m_aiEffortCombo     = nullptr;
+    QPlainTextEdit*    m_aiStopEdit        = nullptr;
+    ElaToggleSwitch*   m_aiStreamUsage     = nullptr;
+
+    // 随服务商能力显隐的从属行：不支持该参数时不展示，避免误导。
+    QList<QWidget*>    m_aiTemperatureRows;   // temperature / top_p
+    QList<QWidget*>    m_aiPenaltyRows;       // frequency_penalty / presence_penalty
+    QList<QWidget*>    m_aiSeedRows;
+    QWidget*           m_aiThinkingCard    = nullptr;   // 思考开关行
+    QWidget*           m_aiEffortCard      = nullptr;   // 推理强度行
+    QList<QWidget*>    m_aiStopRows;
+    QList<QWidget*>    m_aiStreamUsageRows;
 
     // 模型获取专用客户端；随视图析构自动取消请求。
     std::unique_ptr<ApiClient> m_aiClient;

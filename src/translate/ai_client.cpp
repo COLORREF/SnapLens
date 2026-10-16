@@ -27,28 +27,85 @@ ApiClient::~ApiClient() = default;
 // 构建请求体
 // ---------------------------------------------------------------------------
 
-QJsonObject ApiClient::buildRequestBody(const QString& model,
-                                        const QJsonArray& messages,
-                                        int maxTokens,
-                                        double temperature,
-                                        double topP,
-                                        double frequencyPenalty,
-                                        double presencePenalty,
-                                        int seed,
-                                        bool stream)
+QJsonObject ApiClient::buildRequestBody(const ChatParams& params, bool stream)
 {
+    const ProviderConfig cfg = getProviderConfig(params.provider);
+
     QJsonObject body;
-    body["model"] = model;
-    body["messages"] = messages;
-    body["max_tokens"] = maxTokens;
-    body["temperature"] = temperature;
-    body["top_p"] = topP;
-    body["frequency_penalty"] = frequencyPenalty;
-    body["presence_penalty"] = presencePenalty;
+    body["model"] = params.model;
+    body["messages"] = params.messages;
     body["stream"] = stream;
-    if (seed != 0) {
-        body["seed"] = seed;
+
+    // 输出长度字段名与上限各家不同（Kimi 用 max_completion_tokens，max_tokens 已弃用）。
+    if (!cfg.maxTokensField.isEmpty()) {
+        int limit = params.maxTokens;
+        if (cfg.maxTokensLimit > 0) {
+            limit = qBound(1, limit, cfg.maxTokensLimit);
+        }
+        body[cfg.maxTokensField] = limit;
     }
+
+    // 采样总开关（GLM do_sample）。关闭时服务商会忽略 temperature/top_p，
+    // 这里索性不发，避免在忽略语义不一致的服务商上产生歧义。
+    const bool samplingEnabled = (params.doSample != QLatin1String("off"));
+    if (cfg.samplingToggle && params.doSample != QLatin1String("auto")) {
+        body["do_sample"] = (params.doSample == QLatin1String("on"));
+    }
+
+    // 只发送服务商真实支持的采样字段：对 Kimi 这类“传入即报错”的服务商，
+    // 多送一个 temperature 就会导致整次请求失败。
+    if (cfg.temperature && samplingEnabled) {
+        body["temperature"] = qBound(cfg.temperatureMin, params.temperature, cfg.temperatureMax);
+    }
+    if (cfg.topP && samplingEnabled) {
+        body["top_p"] = qBound(cfg.topPMin, params.topP, cfg.topPMax);
+    }
+    if (cfg.frequencyPenalty) {
+        body["frequency_penalty"] = qBound(-2.0, params.frequencyPenalty, 2.0);
+    }
+    if (cfg.presencePenalty) {
+        body["presence_penalty"] = qBound(-2.0, params.presencePenalty, 2.0);
+    }
+    if (cfg.seed && params.seed != 0) {
+        body["seed"] = params.seed;
+    }
+    if (cfg.stop && !params.stop.isEmpty()) {
+        QJsonArray stop;
+        for (const QString& s : params.stop) {
+            if (!s.isEmpty()) stop.append(s);
+        }
+        if (!stop.isEmpty()) body["stop"] = stop;
+    }
+
+    // 思考（推理）参数。auto = 不发送，交给服务商默认值（对未知模型最安全）。
+    if (params.thinking != QLatin1String("auto")
+        && cfg.thinkingStyle != ThinkingStyle::None) {
+        const bool enable = (params.thinking == QLatin1String("on"));
+        // 强制思考的模型（GLM-5.3、Kimi K2.7-code）不接受 disabled，直接不发。
+        if (enable || cfg.thinkingCanDisable) {
+            if (cfg.thinkingStyle == ThinkingStyle::ThinkingObject) {
+                QJsonObject thinking;
+                thinking["type"] = enable ? QStringLiteral("enabled") : QStringLiteral("disabled");
+                body["thinking"] = thinking;
+            } else if (cfg.thinkingStyle == ThinkingStyle::EnableThinkingFlag) {
+                body["enable_thinking"] = enable;
+            }
+        }
+    }
+
+    if (cfg.reasoningEffort && params.reasoningEffort != QLatin1String("auto")) {
+        const QString effort = normalizeReasoningEffort(params.reasoningEffort, cfg.effortOptions);
+        if (!effort.isEmpty()) {
+            body["reasoning_effort"] = effort;
+        }
+    }
+
+    if (stream && params.streamUsage && cfg.usageInStream) {
+        QJsonObject streamOptions;
+        streamOptions["include_usage"] = true;
+        body["stream_options"] = streamOptions;
+    }
+
     return body;
 }
 
@@ -135,19 +192,15 @@ int ApiClient::runEventLoop(QNetworkReply* reply, int timeoutSecs, std::atomic<i
 // 非流式聊天补全
 // ============================================================================
 
-ApiClient::ChatResult ApiClient::chatCreate(const QString& apiKey,
-                                            const QString& apiBase,
-                                            const QString& model,
-                                            const QJsonArray& messages,
-                                            int timeoutSecs,
-                                            double temperature,
-                                            int maxTokens,
-                                            double topP,
-                                            double frequencyPenalty,
-                                            double presencePenalty,
-                                            int seed,
-                                            std::atomic<int>* cancelFlag)
+ApiClient::ChatResult ApiClient::chatCreate(const ChatParams& params)
 {
+    const QString& apiKey = params.apiKey;
+    const QString& apiBase = params.apiBase;
+    const QString& model = params.model;
+    const QJsonArray& messages = params.messages;
+    const int timeoutSecs = params.timeoutSecs;
+    std::atomic<int>* cancelFlag = params.cancelFlag;
+
     ChatResult result;
     result.errorCode = 0;
 
@@ -184,9 +237,7 @@ ApiClient::ChatResult ApiClient::chatCreate(const QString& apiKey,
     QNetworkRequest req(url);
     setupRequest(req, apiKey, timeoutSecs);
 
-    QJsonObject body = buildRequestBody(model, messages, maxTokens, temperature,
-                                        topP, frequencyPenalty, presencePenalty,
-                                        seed, false);
+    QJsonObject body = buildRequestBody(params, false);
     QByteArray bodyData = QJsonDocument(body).toJson(QJsonDocument::Compact);
 
     SNAP_LOG_DEBUG(QString("ApiClient::chatCreate: url=%1 model=%2 msgs=%3")
@@ -263,20 +314,15 @@ ApiClient::ChatResult ApiClient::chatCreate(const QString& apiKey,
 // 流式聊天补全
 // ============================================================================
 
-int ApiClient::chatCreateStream(const QString& apiKey,
-                                const QString& apiBase,
-                                const QString& model,
-                                const QJsonArray& messages,
-                                int timeoutSecs,
-                                double temperature,
-                                int maxTokens,
-                                double topP,
-                                double frequencyPenalty,
-                                double presencePenalty,
-                                int seed,
-                                StreamChunkCallback callback,
-                                std::atomic<int>* cancelFlag)
+int ApiClient::chatCreateStream(const ChatParams& params, StreamChunkCallback callback)
 {
+    const QString& apiKey = params.apiKey;
+    const QString& apiBase = params.apiBase;
+    const QString& model = params.model;
+    const QJsonArray& messages = params.messages;
+    const int timeoutSecs = params.timeoutSecs;
+    std::atomic<int>* cancelFlag = params.cancelFlag;
+
     // 在发起网络请求前验证配置和消息。
     auto failWith = [&callback](const QString& msg) {
         if (callback) callback(QString(), QString(), true, -1, msg);
@@ -309,13 +355,8 @@ int ApiClient::chatCreateStream(const QString& apiKey,
     QNetworkRequest req(url);
     setupRequest(req, apiKey, timeoutSecs);
 
-    QJsonObject body = buildRequestBody(model, messages, maxTokens, temperature,
-                                        topP, frequencyPenalty, presencePenalty,
-                                        seed, true);
-    // 流式请求需要设置 stream_options
-    QJsonObject streamOptions;
-    streamOptions["include_usage"] = false;
-    body["stream_options"] = streamOptions;
+    // stream_options 由 buildRequestBody 按服务商能力决定是否附加。
+    QJsonObject body = buildRequestBody(params, true);
 
     QByteArray bodyData = QJsonDocument(body).toJson(QJsonDocument::Compact);
 

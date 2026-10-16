@@ -8,6 +8,51 @@
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QRegularExpression>
+
+// ============================================================================
+// AiRequestOptions
+// ============================================================================
+
+AiRequestOptions AiRequestOptions::fromSettings(const Settings& s)
+{
+    AiRequestOptions o;
+    o.provider          = s.ai_provider;
+    o.apiKey            = s.ai_api_key;
+    o.apiBase           = s.ai_api_base;
+    o.model             = s.ai_model;
+    o.timeout           = s.ai_timeout;
+    o.temperature       = s.ai_temperature;
+    o.maxTokens         = s.ai_max_tokens;
+    o.topP              = s.ai_top_p;
+    o.frequencyPenalty  = s.ai_frequency_penalty;
+    o.presencePenalty   = s.ai_presence_penalty;
+    o.seed              = s.ai_seed;
+    o.doSample          = s.ai_do_sample;
+    o.thinking          = s.ai_thinking;
+    o.reasoningEffort   = s.ai_reasoning_effort;
+    o.stop              = AiRequestOptions::parseStop(s.ai_stop);
+    o.streamUsage       = s.ai_stream_usage;
+    o.streamThinking    = s.ai_stream_thinking;
+    return o;
+}
+
+QStringList AiRequestOptions::parseStop(const QString& raw)
+{
+    QStringList result;
+    const QStringList lines = raw.split(QRegularExpression(QStringLiteral("[\\r\\n]+")), Qt::SkipEmptyParts);
+    for (const QString& line : lines) {
+        const QString value = line.trimmed();
+        if (!value.isEmpty()) result.append(value);
+        if (result.size() >= 4) break;   // 各家上限不同，按最严的 4 项截断
+    }
+    return result;
+}
+
+QString AiRequestOptions::joinStop(const QStringList& stop)
+{
+    return stop.join(QLatin1Char('\n'));
+}
 
 // ============================================================================
 // TranslateService — 图片翻译
@@ -24,21 +69,10 @@ TranslateService::TranslateService(const QImage& image,
     // 一次性拷贝配置快照（此处仍运行在主线程，之后 run() 只读快照，
     // 与主线程对 Settings 的修改彻底解耦，消除数据竞争）。
     if (settings) {
-        m_provider           = settings->ai_provider;
-        m_tessdataDir        = settings->ocr_tessdata_dir;
-        m_ocrLangs           = settings->ai_ocr_langs;
-        m_apiKey             = settings->ai_api_key;
-        m_apiBase            = settings->ai_api_base;
-        m_model              = settings->ai_model;
-        m_translationPrompt  = settings->ai_translation_prompt;
-        m_streamThinking     = settings->ai_stream_thinking;
-        m_timeout            = settings->ai_timeout;
-        m_temperature        = settings->ai_temperature;
-        m_maxTokens          = settings->ai_max_tokens;
-        m_topP               = settings->ai_top_p;
-        m_frequencyPenalty   = settings->ai_frequency_penalty;
-        m_presencePenalty    = settings->ai_presence_penalty;
-        m_seed               = settings->ai_seed;
+        m_tessdataDir       = settings->ocr_tessdata_dir;
+        m_ocrLangs          = settings->ai_ocr_langs;
+        m_translationPrompt = settings->ai_translation_prompt;
+        m_ai                = AiRequestOptions::fromSettings(*settings);
     }
 }
 
@@ -89,21 +123,20 @@ void TranslateService::run()
         }
 
         // 2. AI 翻译（使用构造时拷贝的配置快照）
-        QString apiKey = m_apiKey;
-        if (apiKey.isEmpty() && providerNeedsApiKey(m_provider)) {
+        const ProviderConfig cfg = getProviderConfig(m_ai.provider);
+
+        if (m_ai.apiKey.isEmpty() && providerNeedsApiKey(m_ai.provider)) {
             emit error("API Key 未设置，请在设置中配置");
             return;
         }
 
-        QString apiBase = m_apiBase;
+        QString apiBase = m_ai.apiBase;
         if (apiBase.isEmpty()) {
-            ProviderConfig cfg = getProviderConfig(m_provider);
             apiBase = cfg.apiBase;
         }
 
-        QString model = m_model;
+        QString model = m_ai.model;
         if (model.isEmpty()) {
-            ProviderConfig cfg = getProviderConfig(m_provider);
             model = cfg.defaultModel;
         }
 
@@ -122,19 +155,32 @@ void TranslateService::run()
         userMsg["content"] = rawText.trimmed();
         messages.append(userMsg);
 
+        ApiClient::ChatParams params;
+        params.apiKey            = m_ai.apiKey;
+        params.apiBase           = apiBase;
+        params.model             = model;
+        params.provider          = m_ai.provider;
+        params.messages          = messages;
+        params.timeoutSecs       = m_ai.timeout;
+        params.temperature       = m_ai.temperature;
+        params.maxTokens         = m_ai.maxTokens;
+        params.topP              = m_ai.topP;
+        params.frequencyPenalty  = m_ai.frequencyPenalty;
+        params.presencePenalty   = m_ai.presencePenalty;
+        params.seed              = m_ai.seed;
+        params.doSample          = m_ai.doSample;
+        params.thinking          = m_ai.thinking;
+        params.reasoningEffort   = m_ai.reasoningEffort;
+        params.stop              = m_ai.stop;
+        params.streamUsage       = m_ai.streamUsage;
+        params.cancelFlag        = &m_cancelFlag;
+
         ApiClient client;
 
-        if (m_streamThinking) {
+        if (m_ai.streamThinking) {
             // 流式调用 — chatCreateStream 已在回调中累积完整 content
             client.chatCreateStream(
-                apiKey, apiBase, model, messages,
-                m_timeout,
-                m_temperature,
-                m_maxTokens,
-                m_topP,
-                m_frequencyPenalty,
-                m_presencePenalty,
-                m_seed,
+                params,
                 [this](const QString& content, const QString& thinking,
                        bool isFinal, int errorCode, const QString& errorMsg) {
                     if (m_cancelFlag.load(std::memory_order_relaxed)) return;
@@ -148,22 +194,11 @@ void TranslateService::run()
                     if (isFinal) {
                         emit translated(content);
                     }
-                },
-                &m_cancelFlag
+                }
             );
-
         } else {
-            // 非流式调用（传入取消标志：窗口关闭/替换时立即 abort 断网）
-            auto result = client.chatCreate(
-                apiKey, apiBase, model, messages,
-                m_timeout,
-                m_temperature,
-                m_maxTokens,
-                m_topP,
-                m_frequencyPenalty,
-                m_presencePenalty,
-                m_seed,
-                &m_cancelFlag);
+            // 非流式调用（取消标志已在 params 中，窗口关闭/替换时立即 abort 断网）
+            auto result = client.chatCreate(params);
 
             if (result.errorCode != 0) {
                 if (m_cancelFlag.load(std::memory_order_relaxed)) {
@@ -195,17 +230,7 @@ TextTranslateService::TextTranslateService(const QString& sourceText,
                                            const QString& scenario,
                                            const QString& promptTemplate,
                                            const QString& fullPrompt,
-                                           const QString& apiKey,
-                                           const QString& apiBase,
-                                           const QString& model,
-                                           int timeout,
-                                           double temperature,
-                                           int maxTokens,
-                                           double topP,
-                                           double frequencyPenalty,
-                                           double presencePenalty,
-                                           int seed,
-                                           bool streamThinking,
+                                           const AiRequestOptions& ai,
                                            QObject* parent)
     : QThread(parent)
     , m_sourceText(sourceText)
@@ -213,17 +238,7 @@ TextTranslateService::TextTranslateService(const QString& sourceText,
     , m_scenario(scenario)
     , m_promptTemplate(promptTemplate)
     , m_fullPrompt(fullPrompt)
-    , m_apiKey(apiKey)
-    , m_apiBase(apiBase)
-    , m_model(model)
-    , m_timeout(timeout)
-    , m_temperature(temperature)
-    , m_maxTokens(maxTokens)
-    , m_topP(topP)
-    , m_frequencyPenalty(frequencyPenalty)
-    , m_presencePenalty(presencePenalty)
-    , m_seed(seed)
-    , m_streamThinking(streamThinking)
+    , m_ai(ai)
 {
 }
 
@@ -251,15 +266,33 @@ void TextTranslateService::run()
         userMsg["content"] = prompt;
         messages.append(userMsg);
 
+        ApiClient::ChatParams params;
+        params.apiKey            = m_ai.apiKey;
+        params.apiBase           = m_ai.apiBase;
+        params.model             = m_ai.model;
+        params.provider          = m_ai.provider;
+        params.messages          = messages;
+        params.timeoutSecs       = m_ai.timeout;
+        params.temperature       = m_ai.temperature;
+        params.maxTokens         = m_ai.maxTokens;
+        params.topP              = m_ai.topP;
+        params.frequencyPenalty  = m_ai.frequencyPenalty;
+        params.presencePenalty   = m_ai.presencePenalty;
+        params.seed              = m_ai.seed;
+        params.doSample          = m_ai.doSample;
+        params.thinking          = m_ai.thinking;
+        params.reasoningEffort   = m_ai.reasoningEffort;
+        params.stop              = m_ai.stop;
+        params.streamUsage       = m_ai.streamUsage;
+        params.cancelFlag        = &m_cancelFlag;
+
         ApiClient client;
 
-        if (m_streamThinking) {
+        if (m_ai.streamThinking) {
             // 流式调用 — chatCreateStream 已在回调中累积完整 content
             // （传入取消标志：窗口关闭/替换时立即 abort 断网，省 token）
             client.chatCreateStream(
-                m_apiKey, m_apiBase, m_model, messages,
-                m_timeout, m_temperature, m_maxTokens,
-                m_topP, m_frequencyPenalty, m_presencePenalty, m_seed,
+                params,
                 [this](const QString& content, const QString& thinking,
                        bool isFinal, int errorCode, const QString& errorMsg) {
                     if (m_cancelFlag.load(std::memory_order_relaxed)) return;
@@ -273,15 +306,10 @@ void TextTranslateService::run()
                     if (isFinal) {
                         emit translated(content);
                     }
-                },
-                &m_cancelFlag
+                }
             );
         } else {
-            auto result = client.chatCreate(
-                m_apiKey, m_apiBase, m_model, messages,
-                m_timeout, m_temperature, m_maxTokens,
-                m_topP, m_frequencyPenalty, m_presencePenalty, m_seed,
-                &m_cancelFlag);
+            auto result = client.chatCreate(params);
             if (result.errorCode != 0) {
                 if (m_cancelFlag.load(std::memory_order_relaxed)) {
                     SNAP_LOG_INFO("TextTranslateService: AI 请求已取消（网络已断开），线程退出");

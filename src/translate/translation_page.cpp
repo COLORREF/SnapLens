@@ -364,17 +364,7 @@ void TranslationPage::onTranslate()
         m_scenarioCombo->currentText(),
         m_settings->text_translation_prompt,
         fullPrompt,
-        m_settings->ai_api_key,
-        m_settings->ai_api_base,
-        m_settings->ai_model,
-        m_settings->ai_timeout,
-        m_settings->ai_temperature,
-        m_settings->ai_max_tokens,
-        m_settings->ai_top_p,
-        m_settings->ai_frequency_penalty,
-        m_settings->ai_presence_penalty,
-        m_settings->ai_seed,
-        m_settings->ai_stream_thinking);
+        AiRequestOptions::fromSettings(*m_settings));
 
     connect(m_service, &TextTranslateService::translated, this, &TranslationPage::onTranslated);
     connect(m_service, &TextTranslateService::thinking, this, &TranslationPage::onThinking);

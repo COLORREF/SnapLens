@@ -13,6 +13,9 @@
 #include <QPainter>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include "../translate/ai_client.h"
 #include "../translate/translator.h"
 #include "../capture/snip_session.h"
@@ -156,6 +159,56 @@ int runRegressionChecks(QApplication& app)
         provider->setCurrentIndex(provider->findData("custom"));
         check(apiBase->text().endsWith("/v1/") && model->currentText() == "local-b",
               "custom AI values were lost when switching providers");
+
+        // 新增的 AI 参数（思考 / 推理强度 / 停止序列 / 流式用量）应能保存
+        // 并按服务商能力显隐。显隐判断需要 AI 页处于当前页，否则整页被判定为隐藏。
+        window.settingsView()->selectCategory("ai");
+        auto* doSample = window.settingsView()->findChild<QComboBox*>("aiDoSampleCombo");
+        auto* thinking = window.settingsView()->findChild<QComboBox*>("aiThinkingCombo");
+        auto* effort = window.settingsView()->findChild<QComboBox*>("aiEffortCombo");
+        auto* stop = window.settingsView()->findChild<QPlainTextEdit*>("aiStopEdit");
+        auto* streamUsage = window.settingsView()->findChild<ElaToggleSwitch*>("aiStreamUsageToggle");
+        check(doSample && thinking && effort && stop && streamUsage, "new AI parameter controls missing");
+        if (doSample && thinking && effort && stop && streamUsage) {
+            // DeepSeek 同时支持思考与推理强度，用它验证保存链路。
+            provider->setCurrentIndex(provider->findData("deepseek"));
+            thinking->setCurrentIndex(thinking->findData("on"));
+            effort->setCurrentIndex(effort->findData("high"));
+            stop->setPlainText("END\n###\n\nSTOP");
+            streamUsage->setIsToggled(false);
+            QMetaObject::invokeMethod(window.settingsView(), "onSave", Qt::DirectConnection);
+            check(settings.ai_thinking == "on" && settings.ai_reasoning_effort == "high",
+                  "thinking / reasoning effort were not saved");
+            check(settings.ai_stop == "END\n###\nSTOP",
+                  "stop sequences should be normalized (trim/blank dropped): " + settings.ai_stop);
+            check(!settings.ai_stream_usage, "stream usage toggle was not saved");
+
+            // GLM 支持 do_sample，且推理档位只接受 low/high/max。
+            provider->setCurrentIndex(provider->findData("glm"));
+            check(doSample->isVisibleTo(window.settingsView()),
+                  "GLM supports do_sample and should show the control");
+            check(effort->findData("low") >= 0 && effort->findData("max") >= 0
+                  && effort->findData("none") < 0 && effort->findData("medium") < 0,
+                  "GLM reasoning effort options should be limited to low/high/max");
+            doSample->setCurrentIndex(doSample->findData("off"));
+            QMetaObject::invokeMethod(window.settingsView(), "onSave", Qt::DirectConnection);
+            check(settings.ai_do_sample == "off", "GLM do_sample selection was not saved");
+
+            // Kimi 支持 thinking，但固定采样参数：do_sample 行应隐藏。
+            provider->setCurrentIndex(provider->findData("kimi"));
+            check(!doSample->isVisibleTo(window.settingsView()),
+                  "GLM-only do_sample row must be hidden for Kimi");
+            check(thinking->isVisibleTo(window.settingsView()),
+                  "Kimi supports thinking and should show the control");
+            check(!effort->isVisibleTo(window.settingsView()),
+                  "Kimi has no reasoning_effort API; the row should be hidden");
+
+            // 混元没有思考参数，整组都应隐藏。
+            provider->setCurrentIndex(provider->findData("hunyuan"));
+            check(!thinking->isVisibleTo(window.settingsView()),
+                  "Hunyuan has no thinking parameter and should hide the control");
+            provider->setCurrentIndex(provider->findData("custom"));
+        }
     }
 
     int dialogs = 0;
@@ -424,9 +477,20 @@ int runRegressionChecks(QApplication& app)
     const QString base = QString("http://127.0.0.1:%1/v1").arg(server.serverPort());
     ApiClient api;
     const QJsonArray messages{QJsonObject{{"role", "user"}, {"content", "fixture"}}};
-    auto chat = api.chatCreate("fixture-key", base, "fixture-model", messages, 2);
+    auto makeParams = [&](const QString& key, const QString& url,
+                          const QString& provider = QStringLiteral("custom")) {
+        ApiClient::ChatParams params;
+        params.apiKey = key;
+        params.apiBase = url;
+        params.model = QStringLiteral("fixture-model");
+        params.provider = provider;
+        params.messages = messages;
+        params.timeoutSecs = 2;
+        return params;
+    };
+    auto chat = api.chatCreate(makeParams("fixture-key", base));
     check(chat.errorCode == 0 && chat.content == "hello" && chat.thinking == "reason", "JSON chat response failed: " + chat.errorMsg);
-    chat = api.chatCreate({}, base + '/', "fixture-model", messages, 2);
+    chat = api.chatCreate(makeParams({}, base + '/'));
     check(chat.errorCode == 0 && chat.content == "hello", "custom local endpoint without key failed: " + chat.errorMsg);
     check(lastRequest.startsWith("POST /v1/chat/completions HTTP/")
           && !lastRequest.toLower().contains("authorization:"), "custom URL or optional auth header was incorrect");
@@ -434,13 +498,102 @@ int runRegressionChecks(QApplication& app)
     auto models = api.listModels({}, base + '/', 2);
     check(models.errorCode == 0 && models.modelIds.contains("local-model"), "custom model list without key failed");
     check(lastRequest.startsWith("GET /v1/models HTTP/"), "custom model list URL had an incorrect path");
+
+    // ---- 服务商能力裁剪：只发送该服务商真正支持的字段 ----
+    // 依据各厂商官方文档（见 providers.h 的 docUrl）。
+    payload = R"({"choices":[{"message":{"content":"hello"}}]})";
+    auto sentBody = [&] { return lastRequest.mid(lastRequest.indexOf("\r\n\r\n") + 4); };
+
+    // Kimi：temperature / top_p / 惩罚项一律不可改，传值会 400；输出用 max_completion_tokens
+    auto kimiParams = makeParams("k", base, QStringLiteral("kimi"));
+    kimiParams.temperature = 0.3;
+    kimiParams.topP = 0.5;
+    kimiParams.frequencyPenalty = 0.4;
+    kimiParams.presencePenalty = 0.4;
+    kimiParams.maxTokens = 2048;
+    api.chatCreate(kimiParams);
+    {
+        const QString body = sentBody();
+        check(!body.contains("temperature") && !body.contains("top_p")
+              && !body.contains("frequency_penalty") && !body.contains("presence_penalty"),
+              "Kimi request must not send fixed sampling parameters");
+        check(body.contains("max_completion_tokens") && !body.contains("\"max_tokens\""),
+              "Kimi request must use max_completion_tokens");
+    }
+
+    // DeepSeek：frequency_penalty / presence_penalty 已废弃，不应发送；温度与 top_p 保留
+    auto dsParams = makeParams("d", base, QStringLiteral("deepseek"));
+    dsParams.frequencyPenalty = 0.4;
+    dsParams.presencePenalty = 0.4;
+    dsParams.thinking = QStringLiteral("on");
+    dsParams.reasoningEffort = QStringLiteral("high");
+    api.chatCreate(dsParams);
+    {
+        const QString body = sentBody();
+        check(!body.contains("frequency_penalty") && !body.contains("presence_penalty"),
+              "DeepSeek request must not send deprecated penalty parameters");
+        check(body.contains("temperature") && body.contains("top_p"),
+              "DeepSeek request should keep temperature and top_p");
+        check(body.contains("\"thinking\"") && body.contains("enabled")
+              && body.contains("reasoning_effort"),
+              "DeepSeek request should carry thinking and reasoning_effort");
+    }
+
+    // GLM：温度上限为 1（非 2），支持 do_sample；越界的推理强度会就近映射
+    auto glmParams = makeParams("g", base, QStringLiteral("glm"));
+    glmParams.temperature = 1.8;              // 超出 GLM 的 0..1
+    glmParams.reasoningEffort = QStringLiteral("none");   // GLM-5.3 只接受 low/high/max
+    api.chatCreate(glmParams);
+    {
+        const QString body = sentBody();
+        check(body.contains("reasoning_effort"), "GLM request should carry reasoning_effort");
+        const QJsonObject obj = QJsonDocument::fromJson(body.toUtf8()).object();
+        const QJsonValue tempValue = obj.value("temperature");
+        check(!tempValue.isUndefined() && tempValue.toDouble() <= 1.0,
+              "GLM temperature must be clamped to the documented 0..1 range");
+    }
+
+    // GLM do_sample=false：服务商忽略 temperature / top_p，请求不应携带这两个字段
+    auto glmNoSample = makeParams("g", base, QStringLiteral("glm"));
+    glmNoSample.doSample = QStringLiteral("off");
+    api.chatCreate(glmNoSample);
+    {
+        const QString body = sentBody();
+        check(body.contains("\"do_sample\":false"), "GLM request should send do_sample when set");
+        check(!body.contains("temperature") && !body.contains("top_p"),
+              "GLM with do_sample=false must omit temperature and top_p");
+    }
+
+    // 通义千问：思考开关是顶层 enable_thinking，不是 thinking 对象
+    auto qwenParams = makeParams("q", base, QStringLiteral("qwen"));
+    qwenParams.thinking = QStringLiteral("off");
+    api.chatCreate(qwenParams);
+    {
+        const QString body = sentBody();
+        check(body.contains("enable_thinking") && !body.contains("\"thinking\""),
+              "Qwen should use the top-level enable_thinking flag");
+    }
+
+    // 自定义服务：按 OpenAI 兼容超集发送，惩罚项与 seed 都应存在
+    auto customParams = makeParams("c", base);
+    customParams.seed = 42;
+    customParams.stop = QStringList{"END"};
+    customParams.streamUsage = true;
+    api.chatCreate(customParams);
+    {
+        const QString body = sentBody();
+        check(body.contains("frequency_penalty") && body.contains("presence_penalty"),
+              "custom provider should keep penalty parameters");
+        check(body.contains("\"seed\":42"), "custom provider should send a non-zero seed");
+        check(body.contains("\"stop\""), "custom provider should send stop sequences");
+    }
     payload = R"({"choices":[{"message":{"content":"hello","reasoning_content":"reason"}}]})";
     payload = "data:{\"choices\":[{\"delta\":{\"content\":\"stream\"}}]}\n\ndata: [DONE]\n\n";
     QString stream;
     int partialChunks = 0;
     int finalChunks = 0;
-    const int streamCode = api.chatCreateStream("fixture-key", base, "fixture-model", messages,
-        2, 0.1, 128, 1.0, 0, 0, 0, [&](const QString& content, const QString&, bool final, int code, const QString&) {
+    const int streamCode = api.chatCreateStream(makeParams("fixture-key", base),
+        [&](const QString& content, const QString&, bool final, int code, const QString&) {
             if (final) ++finalChunks;
             else ++partialChunks;
             if (final && code == 0) stream = content;
@@ -449,7 +602,7 @@ int runRegressionChecks(QApplication& app)
     check(partialChunks == 1 && finalChunks == 1, "SSE content must emit incremental and one final callback");
     payload = "data: {\"choices\":[{\"delta\":{\"content\":\"tail\"}}]}";
     stream.clear();
-    api.chatCreateStream({}, base, "fixture-model", messages, 2, 0.1, 128, 1, 0, 0, 0,
+    api.chatCreateStream(makeParams({}, base),
         [&](const QString& content, const QString&, bool final, int code, const QString&) {
             if (final && code == 0) stream = content;
         });
@@ -457,14 +610,20 @@ int runRegressionChecks(QApplication& app)
     status = 500;
     payload = R"({"error":{"message":"fixture server failure"}})";
     QString streamError;
-    api.chatCreateStream({}, base, "fixture-model", messages, 2, 0.1, 128, 1, 0, 0, 0,
+    api.chatCreateStream(makeParams({}, base),
         [&](const QString&, const QString&, bool final, int code, const QString& error) {
             if (final && code != 0) streamError = error;
         });
     check(streamError.contains("fixture server failure"), "SSE consumed HTTP error details");
     {
+        AiRequestOptions ai;
+        ai.apiBase = base;
+        ai.model = QStringLiteral("fixture-model");
+        ai.timeout = 2;
+        ai.maxTokens = 128;
+        ai.streamThinking = true;
         TextTranslateService service("fixture", "English", "general", "{source_text}", {},
-            {}, base, "fixture-model", 2, 0.1, 128, 1, 0, 0, 0, true);
+            ai);
         int errors = 0;
         QObject::connect(&service, &TextTranslateService::error, &window,
                          [&](const QString&) { ++errors; });
@@ -479,12 +638,14 @@ int runRegressionChecks(QApplication& app)
     }
     status = 401;
     payload = R"({"error":{"message":"fixture unauthorized"}})";
-    check(api.chatCreate("fixture-key", base, "fixture-model", messages, 2).errorCode != 0, "HTTP error reported success");
+    check(api.chatCreate(makeParams("fixture-key", base)).errorCode != 0, "HTTP error reported success");
     stall = true;
     std::atomic<int> cancel{1};
     QElapsedTimer cancellation;
     cancellation.start();
-    check(api.chatCreate("fixture-key", base, "fixture-model", messages, 2, 0.1, 128, 1, 0, 0, 0, &cancel).errorCode != 0,
+    auto cancelled = makeParams("fixture-key", base);
+    cancelled.cancelFlag = &cancel;
+    check(api.chatCreate(cancelled).errorCode != 0,
           "cancelled request reported success");
     check(cancellation.elapsed() < 1500, "request cancellation did not stop promptly");
 

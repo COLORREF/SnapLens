@@ -27,6 +27,7 @@ class QVBoxLayout;
 class QLayout;
 class QPaintEvent;
 class QSlider;
+class QSpinBox;
 class QComboBox;
 class QLineEdit;
 class QPushButton;
@@ -230,6 +231,13 @@ SettingsCard* comboRow(const QString& title, const QString& description,
                        const QStringList& items, int currentIndex,
                        QComboBox** comboOut = nullptr, QWidget* parent = nullptr,
                        ElaIconType::IconName icon = ElaIconType::None);
+
+/// 整数输入行（QSpinBox）。用于值域过大、滑块不合适的参数（如输出 token 上限）。
+SettingsCard* spinRow(const QString& title, const QString& description,
+                      int value, int lo, int hi, int step,
+                      const QString& suffix = QString(),
+                      QSpinBox** spinOut = nullptr, QWidget* parent = nullptr,
+                      ElaIconType::IconName icon = ElaIconType::None);
 
 /// 选项带 data 的下拉行（如「跟随系统 / 浅色 / 深色」）。
 /// 与 QStringList 版分开命名，避免花括号初始化列表在两者间产生二义性。

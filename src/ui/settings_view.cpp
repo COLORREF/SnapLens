@@ -7,6 +7,7 @@
 #include "../ocr/ocr_engine.h"
 #include "../translate/providers.h"
 #include "../translate/ai_client.h"
+#include "../translate/translator.h"
 #include "../log/log_manager.h"
 
 #include <QCheckBox>
@@ -23,6 +24,7 @@
 #include <QProgressBar>
 #include <QRegularExpression>
 #include <QPushButton>
+#include <QSpinBox>
 #include <QStackedWidget>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -1109,34 +1111,70 @@ QWidget* SettingsView::buildAiSettingsTab()
     m_aiErrorRow->setVisible(false);
     page->addBlock(m_aiErrorRow, 0);
 
-    page->addSection("生成参数", "翻译建议使用低温度与 1.0 核采样，输出更稳定、更贴原文。");
-    page->addBlock(sliderRow("请求超时", "单次请求的最长等待时间",
-                             m_settings->ai_timeout, 5, 120, " 秒", &m_aiTimeout, page));
-    page->addBlock(decimalSliderRow(
+    // 服务商能力与文档来源提示：参数是否支持、区间上下限都随服务商变化，
+    // 在页面顶部说明依据，避免用户按经验乱填后收到 400。
+    m_aiParamHintRow = new QWidget(page);
+    auto* hintLayout = new QHBoxLayout(m_aiParamHintRow);
+    hintLayout->setContentsMargins(12, 8, 12, 8);
+    m_aiParamHint = new ElaText(m_aiParamHintRow);
+    m_aiParamHint->setTextPixelSize(12);
+    m_aiParamHint->setIsWrapAnywhere(true);
+    bindTheme(m_aiParamHint, [this] {
+        m_aiParamHint->setStyleSheet(QStringLiteral("background: transparent; color: %1;")
+                                         .arg(eTheme->getThemeMode() == ElaThemeType::Dark
+                                                  ? QStringLiteral("#9DA5B2")
+                                                  : QStringLiteral("#5A5F6A")));
+    });
+    hintLayout->addWidget(m_aiParamHint);
+    page->addBlock(m_aiParamHintRow, 0);
+
+    page->addSection("采样参数",
+                     "只发送该服务商真正支持的字段；未支持的参数会自动隐藏并保留配置值。");
+
+    auto* doSampleCard = new SettingsCard(
+        "启用采样", "关闭后服务商忽略 temperature / top_p，输出更确定（GLM 的 do_sample）", page);
+    m_aiDoSampleCombo = new ElaComboBox(doSampleCard);
+    m_aiDoSampleCombo->setObjectName(QStringLiteral("aiDoSampleCombo"));
+    m_aiDoSampleCombo->addItem("自动（不发送，用服务商默认）", "auto");
+    m_aiDoSampleCombo->addItem("开启采样", "on");
+    m_aiDoSampleCombo->addItem("关闭采样（更确定）", "off");
+    m_aiDoSampleCombo->setMinimumWidth(220);
+    {
+        const int idx = m_aiDoSampleCombo->findData(m_settings->ai_do_sample);
+        if (idx >= 0) m_aiDoSampleCombo->setCurrentIndex(idx);
+    }
+    doSampleCard->addControl(m_aiDoSampleCombo);
+    page->addBlock(doSampleCard);
+    m_aiDoSampleCard = doSampleCard;
+
+    auto* tempCard = decimalSliderRow(
         "温度 Temperature",
-        "控制输出随机性。越小越稳定；翻译建议 ≤ 0.3",
-        m_settings->ai_temperature, 0.0, 2.0, 2, QString(), &m_aiTemperature, page));
-    page->addBlock(sliderRow("最大输出 Token",
-                             "单次输出上限（1 汉字 ≈ 2 token）",
-                             m_settings->ai_max_tokens, 256, 8192, QString(),
-                             &m_aiMaxTokens, page));
-    page->addBlock(decimalSliderRow(
+        "控制输出随机性；越低越稳定。翻译建议 ≤ 0.3（区间随服务商调整）",
+        m_settings->ai_temperature, 0.0, 2.0, 2, QString(), &m_aiTemperature, page);
+    page->addBlock(tempCard);
+
+    auto* topPCard = decimalSliderRow(
         "Top P（核采样）",
-        "越低输出越聚焦；翻译建议 1.0",
-        m_settings->ai_top_p, 0.0, 1.0, 2, QString(), &m_aiTopP, page));
-    page->addBlock(decimalSliderRow(
+        "与温度二选一调整；翻译建议 1.0（区间随服务商调整）",
+        m_settings->ai_top_p, 0.01, 1.0, 2, QString(), &m_aiTopP, page);
+    page->addBlock(topPCard);
+
+    auto* freqCard = decimalSliderRow(
         "频率惩罚 Frequency Penalty",
-        "正值抑制重复用词；建议 0.0",
+        "正值抑制重复用词；0 为不惩罚",
         m_settings->ai_frequency_penalty, -2.0, 2.0, 2, QString(),
-        &m_aiFrequencyPenalty, page));
-    page->addBlock(decimalSliderRow(
+        &m_aiFrequencyPenalty, page);
+    page->addBlock(freqCard);
+
+    auto* presCard = decimalSliderRow(
         "存在惩罚 Presence Penalty",
-        "正值鼓励引入新内容；建议 0.0",
+        "正值鼓励引入新内容；0 为不惩罚",
         m_settings->ai_presence_penalty, -2.0, 2.0, 2, QString(),
-        &m_aiPresencePenalty, page));
+        &m_aiPresencePenalty, page);
+    page->addBlock(presCard);
 
     auto* seedCard = new SettingsCard("随机种子 Seed",
-                                      "相同种子得到相同结果；0 为随机",
+                                      "相同种子尽量复现相同结果；0 为不指定（随机）",
                                       page);
     m_aiSeedEdit = new ElaLineEdit(seedCard);
     m_aiSeedEdit->setText(QString::number(m_settings->ai_seed));
@@ -1145,7 +1183,76 @@ QWidget* SettingsView::buildAiSettingsTab()
     seedCard->addControl(m_aiSeedEdit);
     page->addBlock(seedCard);
 
+    m_aiTemperatureRows = {tempCard, topPCard};
+    m_aiPenaltyRows = {freqCard, presCard};
+    m_aiSeedRows = {seedCard};
+
+    page->addSection("输出与停止", "输出上限字段名与上限随服务商不同，界面按当前服务商自动调整。");
+
+    auto* maxTokensCard = spinRow(
+        "最大输出 Token",
+        "单次输出上限（1 汉字 ≈ 2 token）；上限随服务商调整",
+        m_settings->ai_max_tokens, 1, 8192, 256, QString(),
+        &m_aiMaxTokens, page);
+    page->addBlock(maxTokensCard);
+    m_aiMaxTokensCard = maxTokensCard;
+
+    auto* timeoutCard = spinRow("请求超时", "单次请求的最长等待时间",
+                                m_settings->ai_timeout, 5, 120, 5, " 秒",
+                                &m_aiTimeout, page);
+    page->addBlock(timeoutCard);
+
+    auto* stopPanel = new PanelCard("停止序列",
+                                    "每行一个，最多 4 项；模型遇到这些字符串即停止生成", page);
+    m_aiStopEdit = new ElaPlainTextEdit(stopPanel);
+    m_aiStopEdit->setObjectName(QStringLiteral("aiStopEdit"));
+    m_aiStopEdit->setPlainText(m_settings->ai_stop);
+    m_aiStopEdit->setPlaceholderText("每行一个停止词，例如：\n###\n</answer>");
+    m_aiStopEdit->setMinimumHeight(84);
+    stopPanel->setContent(m_aiStopEdit);
+    page->addBlock(stopPanel, Dim::SectionGap - Dim::RowGap);
+    m_aiStopRows = {stopPanel};
+
+    auto* streamUsageCard = toggleRow(
+        "流式请求附带用量统计",
+        "在流式响应末尾返回 token 用量（stream_options.include_usage）",
+        m_settings->ai_stream_usage, &m_aiStreamUsage, page);
+    if (m_aiStreamUsage) m_aiStreamUsage->setObjectName(QStringLiteral("aiStreamUsageToggle"));
+    page->addBlock(streamUsageCard);
+    m_aiStreamUsageRows = {streamUsageCard};
+
+    page->addSection("思考与推理",
+                     "支持思考参数的服务商可控制是否推理与推理强度；强制思考的模型会隐藏开关。");
+
+    auto* thinkingCard = new SettingsCard(
+        "思考模式", "开启后模型先推理再作答；自动表示不发送该字段", page);
+    m_aiThinkingCombo = new ElaComboBox(thinkingCard);
+    m_aiThinkingCombo->setObjectName(QStringLiteral("aiThinkingCombo"));
+    m_aiThinkingCombo->addItem("自动（不发送）", "auto");
+    m_aiThinkingCombo->addItem("开启思考", "on");
+    m_aiThinkingCombo->addItem("关闭思考", "off");
+    m_aiThinkingCombo->setMinimumWidth(200);
+    {
+        const int idx = m_aiThinkingCombo->findData(m_settings->ai_thinking);
+        if (idx >= 0) m_aiThinkingCombo->setCurrentIndex(idx);
+    }
+    thinkingCard->addControl(m_aiThinkingCombo);
+    page->addBlock(thinkingCard);
+    m_aiThinkingCard = thinkingCard;
+
+    auto* effortCard = new SettingsCard(
+        "推理强度", "自动表示不发送，由服务商取默认档位", page);
+    m_aiEffortCombo = new ElaComboBox(effortCard);
+    m_aiEffortCombo->setObjectName(QStringLiteral("aiEffortCombo"));
+    m_aiEffortCombo->setMinimumWidth(200);
+    effortCard->addControl(m_aiEffortCombo);
+    page->addBlock(effortCard);
+    m_aiEffortCard = effortCard;
+
+
+
     appendPageReset(page, "ai_settings", "AI 设置页面");
+    refreshAiPage();
     return page;
 }
 
@@ -1404,6 +1511,111 @@ void SettingsView::onProviderChanged(int)
     }
     m_aiCustomModelsCard->setVisible(newPid == "custom");
     m_currentProvider = newPid;
+    refreshAiPage();
+}
+
+void SettingsView::refreshAiPage()
+{
+    if (!m_aiProviderCombo || !m_aiParamHint) return;
+
+    const ProviderConfig cfg =
+        getProviderConfig(m_aiProviderCombo->currentData().toString());
+    const bool samplingToggle = cfg.samplingToggle;
+
+    // —— 从属行显隐：不支持的服务商不展示对应参数，避免误以为调整有效 ——
+    if (m_aiDoSampleCard) m_aiDoSampleCard->setVisible(samplingToggle);
+    setRowsVisible(m_aiTemperatureRows, cfg.temperature || cfg.topP);
+    setRowsVisible(m_aiPenaltyRows, cfg.frequencyPenalty || cfg.presencePenalty);
+    setRowsVisible(m_aiSeedRows, cfg.seed);
+    // 思考开关与推理强度是两个独立能力：Kimi 支持 thinking 但没有 reasoning_effort，
+    // 因此逐行判断，避免整组一起显示。
+    if (m_aiThinkingCard) m_aiThinkingCard->setVisible(cfg.thinkingStyle != ThinkingStyle::None);
+    if (m_aiEffortCard) m_aiEffortCard->setVisible(cfg.reasoningEffort);
+    setRowsVisible(m_aiStopRows, cfg.stop);
+    setRowsVisible(m_aiStreamUsageRows, cfg.usageInStream);
+
+    // 惩罚项逐行判断：有的服务商只支持其一
+    for (QWidget* row : m_aiPenaltyRows) {
+        if (!row) continue;
+        const bool isFrequency = (row == m_aiPenaltyRows.value(0));
+        row->setVisible(isFrequency ? cfg.frequencyPenalty : cfg.presencePenalty);
+    }
+
+    // —— 温度 / 核采样区间随服务商调整（GLM 温度上限为 1，Kimi 固定不可改）——
+    if (m_aiTemperature && cfg.temperature) {
+        m_aiTemperature->setRange(static_cast<int>(cfg.temperatureMin * 100),
+                                  static_cast<int>(cfg.temperatureMax * 100));
+        m_aiTemperature->setValue(qBound(static_cast<int>(cfg.temperatureMin * 100),
+                                         m_aiTemperature->value(),
+                                         static_cast<int>(cfg.temperatureMax * 100)));
+    }
+    if (m_aiTopP && cfg.topP) {
+        m_aiTopP->setRange(static_cast<int>(cfg.topPMin * 100),
+                           static_cast<int>(cfg.topPMax * 100));
+        m_aiTopP->setValue(qBound(static_cast<int>(cfg.topPMin * 100),
+                                  m_aiTopP->value(),
+                                  static_cast<int>(cfg.topPMax * 100)));
+    }
+
+    // —— 输出上限：字段名与最大值按服务商能力调整 ——
+    if (m_aiMaxTokens) {
+        m_aiMaxTokens->setRange(1, qMax(1, cfg.maxTokensLimit));
+        m_aiMaxTokens->setValue(qBound(1, m_aiMaxTokens->value(), cfg.maxTokensLimit));
+    }
+    if (m_aiMaxTokensCard) {
+        QString field = QStringLiteral("max_tokens");
+        if (cfg.maxTokensField == QLatin1String("max_completion_tokens"))
+            field = QStringLiteral("max_completion_tokens");
+        m_aiMaxTokensCard->setToolTip(
+            QStringLiteral("该服务商使用 %1，上限 %2 token")
+                .arg(field).arg(cfg.maxTokensLimit));
+    }
+
+    // —— 思考相关控件：不支持就不显示；强制思考的模型禁用「关闭思考」——
+    if (m_aiThinkingCombo) {
+        if (auto* model = m_aiThinkingCombo->model()) {
+            const QModelIndex offIdx = model->index(m_aiThinkingCombo->findData("off"), 0);
+            if (offIdx.isValid())
+                model->setData(offIdx,
+                    !cfg.thinkingCanDisable
+                        ? QVariant(0)
+                        : QVariant(Qt::ItemIsSelectable | Qt::ItemIsEnabled),
+                    Qt::UserRole - 1);
+        }
+        // 之前选中「关闭思考」但当前模型强制思考时，回退到自动
+        if (!cfg.thinkingCanDisable
+            && m_aiThinkingCombo->currentData().toString() == QLatin1String("off")) {
+            m_aiThinkingCombo->setCurrentIndex(m_aiThinkingCombo->findData("auto"));
+        }
+    }
+    if (m_aiEffortCombo) {
+        const QString previous = m_aiEffortCombo->currentData().toString();
+        m_aiEffortCombo->clear();
+        m_aiEffortCombo->addItem("自动（不发送）", "auto");
+        for (const QString& option : cfg.effortOptions)
+            m_aiEffortCombo->addItem(option, option);
+        const int idx = m_aiEffortCombo->findData(previous.isEmpty()
+                                                      ? m_settings->ai_reasoning_effort
+                                                      : previous);
+        m_aiEffortCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+    }
+
+    // —— 顶部提示：说明当前服务商的参数支持情况与文档来源 ——
+    QStringList notes;
+    if (!cfg.temperature || !cfg.topP) {
+        notes.append(QStringLiteral("该服务商固定 temperature / top_p，传入会报错，已自动隐藏"));
+    }
+    if (!cfg.frequencyPenalty && !cfg.presencePenalty) {
+        notes.append(QStringLiteral("不支持频率/存在惩罚，已自动隐藏"));
+    }
+    if (cfg.thinkingStyle != ThinkingStyle::None && !cfg.thinkingCanDisable) {
+        notes.append(QStringLiteral("当前模型系列强制思考，无法关闭"));
+    }
+    QString hint = notes.isEmpty()
+        ? QStringLiteral("参数按 %1 官方文档裁剪；未列出的字段不会发送。")
+              .arg(cfg.label)
+        : QStringLiteral("%1；参数按 %2 官方文档裁剪。").arg(notes.join("；"), cfg.label);
+    m_aiParamHint->setText(hint);
 }
 
 void SettingsView::onFetchModels()
@@ -1571,6 +1783,13 @@ bool SettingsView::saveToSettings()
         }
     }
     m_settings->ai_seed = seedOk ? seedVal : 0;
+    m_settings->ai_do_sample = m_aiDoSampleCombo->currentData().toString();
+    m_settings->ai_thinking = m_aiThinkingCombo->currentData().toString();
+    m_settings->ai_reasoning_effort = m_aiEffortCombo->currentData().toString();
+    // 停止序列：按行拆分、去空、最多 4 项（各家上限不同，取最严）
+    m_settings->ai_stop = AiRequestOptions::joinStop(
+        AiRequestOptions::parseStop(m_aiStopEdit->toPlainText()));
+    m_settings->ai_stream_usage = m_aiStreamUsage->getIsToggled();
 
     m_settings->ai_target_lang = m_aiTargetLangCombo->currentText();
     m_settings->ai_confirm_before_translate = m_aiConfirmBefore->getIsToggled();
@@ -1710,7 +1929,19 @@ void SettingsView::loadFromSettings()
     m_aiFrequencyPenalty->setValue(static_cast<int>(s.ai_frequency_penalty * 100));
     m_aiPresencePenalty->setValue(static_cast<int>(s.ai_presence_penalty * 100));
     m_aiSeedEdit->setText(QString::number(s.ai_seed));
+    {
+        const int idx = m_aiDoSampleCombo->findData(s.ai_do_sample);
+        m_aiDoSampleCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+    }
+    {
+        const int idx = m_aiThinkingCombo->findData(s.ai_thinking);
+        m_aiThinkingCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+    }
+    m_aiStopEdit->setPlainText(s.ai_stop);
+    setToggle(m_aiStreamUsage, s.ai_stream_usage);
     m_aiErrorRow->setVisible(false);
+    // 服务商决定参数可用范围，回填后按当前服务商刷新一次
+    refreshAiPage();
 
     // 翻译
     const int tli = m_aiTargetLangCombo->findText(s.ai_target_lang);
@@ -1892,8 +2123,19 @@ void SettingsView::buildResetTable() {
         {"ai_settings", [this](const Settings& d){ m_aiTopP->setValue(static_cast<int>(d.ai_top_p * 100)); }},
         {"ai_settings", [this](const Settings& d){ m_aiFrequencyPenalty->setValue(static_cast<int>(d.ai_frequency_penalty * 100)); }},
         {"ai_settings", [this](const Settings& d){ m_aiPresencePenalty->setValue(static_cast<int>(d.ai_presence_penalty * 100)); }},
-        {"ai_settings", [this](const Settings&){ m_aiSeedEdit->setText("0"); }},
+        {"ai_settings", [this](const Settings& d){ m_aiSeedEdit->setText(QString::number(d.ai_seed)); }},
+        {"ai_settings", [this](const Settings& d){
+            const int idx = m_aiDoSampleCombo->findData(d.ai_do_sample);
+            m_aiDoSampleCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+        }},
+        {"ai_settings", [this](const Settings& d){
+            const int idx = m_aiThinkingCombo->findData(d.ai_thinking);
+            m_aiThinkingCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+        }},
+        {"ai_settings", [this](const Settings& d){ m_aiStopEdit->setPlainText(d.ai_stop); }},
+        {"ai_settings", [this](const Settings& d){ setToggle(m_aiStreamUsage, d.ai_stream_usage); }},
         {"ai_settings", [this](const Settings&){ m_aiErrorRow->setVisible(false); }},
+        {"ai_settings", [this](const Settings&){ refreshAiPage(); }},
 
         // ---- 翻译 ----
         {"translate", [this](const Settings& d){
