@@ -2,6 +2,7 @@
 #include "ElaWidgetTools.hpp"
 #include <QPointer>
 class Settings;
+class AiModelSelector;
 class NotifyManager;
 class TextTranslateService;
 class QPlainTextEdit;
@@ -69,6 +70,7 @@ private:
     QWidget* buildTranslatePage();
     void applyOrientation(bool horizontal);
     void saveLayoutState();
+    AiModelSelector* m_aiSelector = nullptr;
     Settings* m_settings;
     NotifyManager* m_notifyManager;
     QComboBox*      m_scenarioCombo  = nullptr;

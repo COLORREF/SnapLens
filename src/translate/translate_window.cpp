@@ -1,5 +1,6 @@
 #include "translate_window.h"
 #include "translator.h"
+#include "ai_model_selector.h"
 #include "translation_task.h"
 #include "../settings.h"
 #include "../notify/notify_manager.h"
@@ -100,8 +101,10 @@ void TranslateWindow::buildUi()
 
     // ── 命令区 ──
     auto* commandCard = new Card(central);
-    auto* toolbar = new QHBoxLayout(commandCard);
-    toolbar->setContentsMargins(16, 12, 16, 12);
+    auto* commandRoot = new QVBoxLayout(commandCard);
+    commandRoot->setContentsMargins(16, 12, 16, 12);
+    auto* toolbar = new QHBoxLayout;
+    commandRoot->addLayout(toolbar);
     toolbar->setSpacing(10);
     toolbar->addWidget(detailText("目标语言", commandCard));
 
@@ -127,6 +130,8 @@ void TranslateWindow::buildUi()
     m_translateBtn->setEnabled(false);
     connect(m_translateBtn, &QPushButton::clicked, this, &TranslateWindow::startTranslation);
     toolbar->addWidget(m_translateBtn);
+    m_aiSelector = new AiModelSelector(m_settings, commandCard);
+    commandRoot->addWidget(m_aiSelector);
     root->addWidget(commandCard);
 
     // ── 工作区：左图右文 ──
@@ -196,6 +201,8 @@ void TranslateWindow::buildUi()
     statusRow->addStretch();
     root->addLayout(statusRow);
     addCentralWidget(central);
+    // Ela reserves stack 0 for navigation; this popup owns the added page at 1.
+    setCurrentStackIndex(1);
 }
 
 void TranslateWindow::launchService()
@@ -206,14 +213,15 @@ void TranslateWindow::launchService()
     m_translating = true;
     m_progressRing->setVisible(true);
     m_progressRing->setIsBusying(true);
-    m_translateBtn->setText(QString("翻译为「%1」").arg(lang));
-    m_translateBtn->setEnabled(false);
+    m_translateBtn->setText("停止翻译");
+    m_translateBtn->setEnabled(true);
     m_langCombo->setEnabled(false);
 
     // Convert QPixmap to QImage on the main thread (QPixmap is NOT thread-safe)
     QImage image = m_pixmap.toImage().convertToFormat(QImage::Format_RGB888);
 
-    m_service = new TranslateService(image, lang, m_settings);
+    const auto ai = m_aiSelector->snapshot();
+    m_service = new TranslateService(image, lang, m_settings, nullptr, &ai);
     connect(m_service, &TranslateService::translated, this, &TranslateWindow::onTranslated);
     connect(m_service, &TranslateService::ocrText, this, &TranslateWindow::onOcrText);
     connect(m_service, &TranslateService::thinking, this, &TranslateWindow::onThinking);
@@ -224,6 +232,16 @@ void TranslateWindow::launchService()
 
 void TranslateWindow::startTranslation()
 {
+    if (m_translating) {
+        releaseTranslationTask(m_service, this);
+        m_translating = false;
+        m_translateBtn->setText("重新翻译");
+        m_translateBtn->setEnabled(true);
+        m_langCombo->setEnabled(true);
+        m_progressRing->setVisible(false);
+        m_statusLabel->setText("已停止翻译");
+        return;
+    }
     releaseTranslationTask(m_service, this);
 
     m_transEdit->clear();
@@ -269,6 +287,7 @@ void TranslateWindow::onThinking(const QString& text)
     // disconnect 不能撤销已排队的信号，丢弃旧任务的回写。
     if (!m_service || sender() != m_service.data()) return;
     m_thinkEdit->setPlainText(text);
+    if (!text.isEmpty()) m_statusLabel->setText("AI 正在思考…");
 }
 
 void TranslateWindow::onError(const QString& msg)

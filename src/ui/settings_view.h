@@ -16,6 +16,7 @@
 #include "snapkit.h"
 
 #include <QMap>
+#include <QJsonObject>
 #include <QString>
 #include <QStringList>
 #include <QVariant>
@@ -260,6 +261,7 @@ private:
     QWidget*           m_aiErrorRow        = nullptr;
     ElaText*           m_aiParamHint       = nullptr;   // 服务商能力/来源文档提示条
     QWidget*           m_aiParamHintRow    = nullptr;
+    QSpinBox*          m_aiResponseIdleTimeout = nullptr;
     QSpinBox*          m_aiTimeout         = nullptr;
     QSlider*           m_aiTemperature     = nullptr;
     QSpinBox*          m_aiMaxTokens       = nullptr;
@@ -273,6 +275,20 @@ private:
     QComboBox*         m_aiDoSampleCombo   = nullptr;
     QComboBox*         m_aiThinkingCombo   = nullptr;
     QComboBox*         m_aiEffortCombo     = nullptr;
+    QComboBox*         m_aiThinkingFormat = nullptr;
+    QComboBox*         m_aiOutputField = nullptr;
+    QPlainTextEdit*    m_aiExtraBody = nullptr;
+    QPlainTextEdit*    m_aiRequestPreview = nullptr;
+    QPlainTextEdit*    m_aiMetadataPreview = nullptr;
+    QMap<QString, QCheckBox*> m_aiParameterChecks;
+    QJsonObject m_aiProfiles;
+    QJsonObject m_aiMetadata;
+    QString m_aiProfileKey;
+    bool m_loadingAiProfile = false;
+    QJsonObject captureAiProfile() const;
+    void applyAiProfile(const QJsonObject& profile);
+    void switchAiProfile();
+    void previewAiRequest();
     QPlainTextEdit*    m_aiStopEdit        = nullptr;
     ElaToggleSwitch*   m_aiStreamUsage     = nullptr;
 

@@ -1,8 +1,11 @@
 #include "ai_client.h"
 #include "providers.h"
-#include "log/log_manager.h"
+#include "model_capabilities.h"
+#include "reply_waiter.h"
+#include <QLoggingCategory>
 
-#include <QEventLoop>
+Q_LOGGING_CATEGORY(aiClientLog, "ai.client")
+
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -11,9 +14,25 @@
 #include <QTimer>
 #include <QUrl>
 
-// ============================================================================
-// ApiClient 实现
-// ============================================================================
+namespace {
+QString validateChat(const ApiClient::ChatParams& params)
+{
+    if (params.apiBase.trimmed().isEmpty())
+        return QStringLiteral("API 地址未配置，请在设置中检查服务商与 API Base");
+    if (params.model.trimmed().isEmpty())
+        return QStringLiteral("未选择模型，请在设置中配置翻译/AI 模型");
+    bool hasContent = false;
+    for (const auto& message : params.messages)
+        if (!message.toObject().value("content").toString().trimmed().isEmpty()) {
+            hasContent = true;
+            break;
+        }
+    if (!hasContent) return QStringLiteral("消息内容为空，无法发送 API 请求");
+    if (providerEndpoint(params.apiBase, "chat/completions").isEmpty())
+        return QStringLiteral("API 地址无效，请填写 http:// 或 https:// 开头的接口根地址");
+    return {};
+}
+} // namespace
 
 ApiClient::ApiClient(QObject* parent)
     : QObject(parent)
@@ -23,95 +42,103 @@ ApiClient::ApiClient(QObject* parent)
 
 ApiClient::~ApiClient() = default;
 
-// ---------------------------------------------------------------------------
-// 构建请求体
-// ---------------------------------------------------------------------------
-
-QJsonObject ApiClient::buildRequestBody(const ChatParams& params, bool stream)
+QJsonObject ApiClient::buildRequestBody(const ChatParams& params, bool stream, QString* error)
 {
-    const ProviderConfig cfg = getProviderConfig(params.provider);
-
-    QJsonObject body;
-    body["model"] = params.model;
-    body["messages"] = params.messages;
-    body["stream"] = stream;
-
-    // 输出长度字段名与上限各家不同（Kimi 用 max_completion_tokens，max_tokens 已弃用）。
-    if (!cfg.maxTokensField.isEmpty()) {
-        int limit = params.maxTokens;
-        if (cfg.maxTokensLimit > 0) {
-            limit = qBound(1, limit, cfg.maxTokensLimit);
+    if (error) error->clear();
+    auto fail = [error](const QString& message) {
+        if (error) *error = message;
+        return QJsonObject{};
+    };
+    const auto enabled = params.enabledParameters.split(',', Qt::SkipEmptyParts);
+    const auto cfg = getProviderConfig(params.provider);
+    const auto capabilities = ModelCapabilities::fromMetadata(params.modelMetadata);
+    QJsonObject body{{"model", params.model}, {"messages", params.messages}, {"stream", stream}};
+    if (enabled.contains("max_tokens")) {
+        const QString field = params.maxTokensField == "auto" || params.maxTokensField.isEmpty()
+            ? (capabilities.outputField.isEmpty() ? cfg.maxTokensField : capabilities.outputField)
+            : params.maxTokensField;
+        if (field != "max_tokens" && field != "max_completion_tokens")
+            return fail("输出长度字段必须为 max_tokens 或 max_completion_tokens");
+        body[field] = params.maxTokens;
+    }
+    if (enabled.contains("temperature")) body["temperature"] = params.temperature;
+    if (enabled.contains("top_p")) body["top_p"] = params.topP;
+    if (enabled.contains("frequency_penalty")) body["frequency_penalty"] = params.frequencyPenalty;
+    if (enabled.contains("presence_penalty")) body["presence_penalty"] = params.presencePenalty;
+    if (enabled.contains("seed")) body["seed"] = params.seed;
+    if (!params.stop.isEmpty()) body["stop"] = QJsonArray::fromStringList(params.stop);
+    if (params.doSample == "on" || params.doSample == "off")
+        body["do_sample"] = params.doSample == "on";
+    if (params.thinking == "on" || params.thinking == "off") {
+        QString format = params.thinkingFormat;
+        if ((format == "auto" || format.isEmpty()) && !capabilities.thinkingFormat.isEmpty())
+            format = capabilities.thinkingFormat;
+        if (format == "auto" || format.isEmpty()) {
+            if (params.provider == "custom" || cfg.thinkingStyle == ThinkingStyle::None)
+                return fail("未知的思考开关格式，请选择字段形式，或使用推理强度/自定义 JSON");
+            format = cfg.thinkingStyle == ThinkingStyle::EnableThinkingFlag
+                ? "enable_thinking" : "thinking";
         }
-        body[cfg.maxTokensField] = limit;
+        if (format == "enable_thinking") body[format] = params.thinking == "on";
+        else if (format == "thinking")
+            body[format] = QJsonObject{{"type", params.thinking == "on" ? "enabled" : "disabled"}};
+        else return fail("未知的思考开关格式，请使用自定义 JSON");
     }
-
-    // 采样总开关（GLM do_sample）。关闭时服务商会忽略 temperature/top_p，
-    // 这里索性不发，避免在忽略语义不一致的服务商上产生歧义。
-    const bool samplingEnabled = (params.doSample != QLatin1String("off"));
-    if (cfg.samplingToggle && params.doSample != QLatin1String("auto")) {
-        body["do_sample"] = (params.doSample == QLatin1String("on"));
-    }
-
-    // 只发送服务商真实支持的采样字段：对 Kimi 这类“传入即报错”的服务商，
-    // 多送一个 temperature 就会导致整次请求失败。
-    if (cfg.temperature && samplingEnabled) {
-        body["temperature"] = qBound(cfg.temperatureMin, params.temperature, cfg.temperatureMax);
-    }
-    if (cfg.topP && samplingEnabled) {
-        body["top_p"] = qBound(cfg.topPMin, params.topP, cfg.topPMax);
-    }
-    if (cfg.frequencyPenalty) {
-        body["frequency_penalty"] = qBound(-2.0, params.frequencyPenalty, 2.0);
-    }
-    if (cfg.presencePenalty) {
-        body["presence_penalty"] = qBound(-2.0, params.presencePenalty, 2.0);
-    }
-    if (cfg.seed && params.seed != 0) {
-        body["seed"] = params.seed;
-    }
-    if (cfg.stop && !params.stop.isEmpty()) {
-        QJsonArray stop;
-        for (const QString& s : params.stop) {
-            if (!s.isEmpty()) stop.append(s);
-        }
-        if (!stop.isEmpty()) body["stop"] = stop;
-    }
-
-    // 思考（推理）参数。auto = 不发送，交给服务商默认值（对未知模型最安全）。
-    if (params.thinking != QLatin1String("auto")
-        && cfg.thinkingStyle != ThinkingStyle::None) {
-        const bool enable = (params.thinking == QLatin1String("on"));
-        // 强制思考的模型（GLM-5.3、Kimi K2.7-code）不接受 disabled，直接不发。
-        if (enable || cfg.thinkingCanDisable) {
-            if (cfg.thinkingStyle == ThinkingStyle::ThinkingObject) {
-                QJsonObject thinking;
-                thinking["type"] = enable ? QStringLiteral("enabled") : QStringLiteral("disabled");
-                body["thinking"] = thinking;
-            } else if (cfg.thinkingStyle == ThinkingStyle::EnableThinkingFlag) {
-                body["enable_thinking"] = enable;
-            }
+    if (!params.reasoningEffort.trimmed().isEmpty() && params.reasoningEffort != "auto")
+        body["reasoning_effort"] = params.reasoningEffort.trimmed();
+    if (stream && params.streamUsage)
+        body["stream_options"] = QJsonObject{{"include_usage", true}};
+    if (!params.extraBody.trimmed().isEmpty()) {
+        QJsonParseError parseError;
+        const auto doc = QJsonDocument::fromJson(params.extraBody.toUtf8(), &parseError);
+        if (parseError.error != QJsonParseError::NoError || !doc.isObject())
+            return fail("自定义请求参数必须是 JSON 对象：" + parseError.errorString());
+        const auto extra = doc.object();
+        for (auto it = extra.begin(); it != extra.end(); ++it) {
+            if (QStringList{"model", "messages", "stream"}.contains(it.key()))
+                return fail("自定义参数不能覆盖 " + it.key());
+            // null 是本地删除标记，避免将 null 与未指定混淆。
+            if (it.value().isNull()) body.remove(it.key());
+            else body[it.key()] = it.value();
         }
     }
-
-    if (cfg.reasoningEffort && params.reasoningEffort != QLatin1String("auto")) {
-        const QString effort = normalizeReasoningEffort(params.reasoningEffort, cfg.effortOptions);
-        if (!effort.isEmpty()) {
-            body["reasoning_effort"] = effort;
-        }
+    if (!stream) body.remove("stream_options");
+    if (body.contains("max_tokens") && body.contains("max_completion_tokens"))
+        return fail("不能同时发送 max_tokens 和 max_completion_tokens；请用 null 删除其中一个");
+    for (const auto& field : {"max_tokens", "max_completion_tokens"}) {
+        const auto value = body.value(field);
+        if (!value.isUndefined() && (!value.isDouble() || value.toDouble() < 1
+                || value.toDouble() != double(value.toInteger())))
+            return fail(QString("%1 必须为正整数").arg(field));
     }
-
-    if (stream && params.streamUsage && cfg.usageInStream) {
-        QJsonObject streamOptions;
-        streamOptions["include_usage"] = true;
-        body["stream_options"] = streamOptions;
-    }
-
     return body;
 }
 
-// ---------------------------------------------------------------------------
-// 设置请求头
-// ---------------------------------------------------------------------------
+ApiClient::ModelsResult ApiClient::parseModels(const QJsonObject& response)
+{
+    ModelsResult result;
+    auto add = [&](const QString& id, QJsonObject model) {
+        if (id.trimmed().isEmpty() || result.metadata.contains(id)) return;
+        model["id"] = id;
+        result.modelIds.append(id);
+        result.metadata[id] = model;
+    };
+    if (response.value("data").isArray()) {
+        for (const auto& value : response.value("data").toArray()) {
+            const auto model = value.toObject();
+            add(model.value("id").toString(), model);
+        }
+    } else if (response.value("models").isObject()) {
+        // Enriched compatible gateways use a map; its key is the endpoint-facing ID.
+        const auto models = response.value("models").toObject();
+        for (auto it = models.begin(); it != models.end(); ++it)
+            if (it.value().isObject()) add(it.key(), it.value().toObject());
+    } else {
+        result.errorCode = -1;
+        result.errorMsg = "模型列表应包含 data 数组或 models 对象；请确认这是 OpenAI 兼容接口";
+    }
+    return result;
+}
 
 void ApiClient::setupRequest(QNetworkRequest& req, const QString& apiKey, int timeoutSecs)
 {
@@ -119,12 +146,8 @@ void ApiClient::setupRequest(QNetworkRequest& req, const QString& apiKey, int ti
         req.setRawHeader("Authorization", ("Bearer " + apiKey.trimmed()).toUtf8());
     req.setRawHeader("Content-Type", "application/json");
     req.setRawHeader("Accept", "application/json");
-    req.setTransferTimeout(timeoutSecs * 1000);
+    req.setTransferTimeout(qBound(0, timeoutSecs, 86400) * 1000);
 }
-
-// ---------------------------------------------------------------------------
-// 解析错误响应体
-// ---------------------------------------------------------------------------
 
 QString ApiClient::parseErrorBody(const QByteArray& body)
 {
@@ -144,54 +167,6 @@ QString ApiClient::parseErrorBody(const QByteArray& body)
     return QString::fromUtf8(body).left(500);
 }
 
-// ---------------------------------------------------------------------------
-// 工具：运行事件循环直至回复完成
-// ---------------------------------------------------------------------------
-
-int ApiClient::runEventLoop(QNetworkReply* reply, int timeoutSecs, std::atomic<int>* cancelFlag)
-{
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-
-    // 取消标志检查定时器
-    QTimer cancelTimer;
-    if (cancelFlag) {
-        cancelTimer.setInterval(100);
-        QObject::connect(&cancelTimer, &QTimer::timeout, [&]() {
-            if (cancelFlag->load()) {
-                SNAP_LOG_INFO("ApiClient::runEventLoop: 检测到取消请求，立即 abort 并断开网络连接");
-                reply->abort();
-                loop.quit();
-            }
-        });
-        cancelTimer.start();
-    }
-
-    if (cancelFlag && cancelFlag->load(std::memory_order_relaxed)) {
-        reply->abort();
-        return -3;
-    }
-    timer.start(timeoutSecs * 1000);
-    if (!reply->isFinished()) loop.exec();
-
-    timer.stop();
-    if (cancelFlag) cancelTimer.stop();
-
-    if (!reply->isFinished()) {
-        reply->abort();
-        return -2; // 超时
-    }
-    return 0;
-}
-
-// ============================================================================
-// 非流式聊天补全
-// ============================================================================
-
 ApiClient::ChatResult ApiClient::chatCreate(const ChatParams& params)
 {
     const QString& apiKey = params.apiKey;
@@ -203,58 +178,34 @@ ApiClient::ChatResult ApiClient::chatCreate(const ChatParams& params)
 
     ChatResult result;
     result.errorCode = 0;
+    if (cancelFlag && cancelFlag->load(std::memory_order_relaxed))
+        return {-3, QStringLiteral("用户取消"), {}, {}};
 
-    // 在发起网络请求前验证配置和消息。
-    if (apiBase.trimmed().isEmpty()) {
+    result.errorMsg = validateChat(params);
+    if (!result.errorMsg.isEmpty()) {
         result.errorCode = -1;
-        result.errorMsg = "API 地址未配置，请在设置中检查服务商与 API Base";
         return result;
     }
-    if (model.trimmed().isEmpty()) {
-        result.errorCode = -1;
-        result.errorMsg = "未选择模型，请在设置中配置翻译/AI 模型";
-        return result;
-    }
-    bool hasContent = false;
-    for (const auto& m : messages) {
-        if (!m.toObject().value("content").toString().trimmed().isEmpty()) {
-            hasContent = true;
-            break;
-        }
-    }
-    if (messages.isEmpty() || !hasContent) {
-        result.errorCode = -1;
-        result.errorMsg = "消息内容为空，无法发送 API 请求";
-        return result;
-    }
-
-    QUrl url = providerEndpoint(apiBase, QStringLiteral("chat/completions"));
-    if (url.isEmpty()) {
-        result.errorCode = -1;
-        result.errorMsg = "API 地址无效，请填写 http:// 或 https:// 开头的接口根地址";
-        return result;
-    }
+    const QUrl url = providerEndpoint(apiBase, "chat/completions");
     QNetworkRequest req(url);
-    setupRequest(req, apiKey, timeoutSecs);
+    setupRequest(req, apiKey, 0);
 
-    QJsonObject body = buildRequestBody(params, false);
+    QJsonObject body = buildRequestBody(params, false, &result.errorMsg);
+    if (!result.errorMsg.isEmpty()) {
+        result.errorCode = -1;
+        return result;
+    }
     QByteArray bodyData = QJsonDocument(body).toJson(QJsonDocument::Compact);
 
-    SNAP_LOG_DEBUG(QString("ApiClient::chatCreate: url=%1 model=%2 msgs=%3")
+    qCDebug(aiClientLog).noquote() << (QString("ApiClient::chatCreate: url=%1 model=%2 msgs=%3")
                        .arg(url.toString(), model).arg(messages.size()));
 
     QNetworkReply* reply = m_nam->post(req, bodyData);
-    runEventLoop(reply, timeoutSecs, cancelFlag);
+    const auto wait = waitForReply(reply, {timeoutSecs, params.responseIdleTimeoutSecs, 0}, cancelFlag);
 
-    if (reply->error() == QNetworkReply::OperationCanceledError) {
-        // 区分用户取消与超时（窗口关闭/替换时 requestCancel 置位触发 abort）
-        if (cancelFlag && cancelFlag->load()) {
-            result.errorCode = -3;
-            result.errorMsg = "用户取消";
-        } else {
-            result.errorCode = -2;
-            result.errorMsg = "请求超时";
-        }
+    if (wait.errorCode != 0) {
+        result.errorCode = wait.errorCode;
+        result.errorMsg = wait.error;
         reply->deleteLater();
         return result;
     }
@@ -273,7 +224,7 @@ ApiClient::ChatResult ApiClient::chatCreate(const ChatParams& params)
             result.errorMsg = QString("API 请求失败 (%1): %2")
                                   .arg(httpStatus).arg(errDetail);
         }
-        SNAP_LOG_ERROR(QString("ApiClient::chatCreate: FAILED %1").arg(result.errorMsg));
+        qCWarning(aiClientLog).noquote() << (QString("ApiClient::chatCreate: FAILED %1").arg(result.errorMsg));
         reply->deleteLater();
         return result;
     }
@@ -306,13 +257,9 @@ ApiClient::ChatResult ApiClient::chatCreate(const ChatParams& params)
         result.thinking = message["reasoning_content"].toString();
     }
 
-    SNAP_LOG_DEBUG(QString("ApiClient::chatCreate: OK content=%1 chars").arg(result.content.size()));
+    qCDebug(aiClientLog).noquote() << (QString("ApiClient::chatCreate: OK content=%1 chars").arg(result.content.size()));
     return result;
 }
-
-// ============================================================================
-// 流式聊天补全
-// ============================================================================
 
 int ApiClient::chatCreateStream(const ChatParams& params, StreamChunkCallback callback)
 {
@@ -324,43 +271,33 @@ int ApiClient::chatCreateStream(const ChatParams& params, StreamChunkCallback ca
     std::atomic<int>* cancelFlag = params.cancelFlag;
 
     // 在发起网络请求前验证配置和消息。
+    if (cancelFlag && cancelFlag->load(std::memory_order_relaxed)) {
+        if (callback) callback({}, {}, true, -3, QStringLiteral("用户取消"));
+        return -3;
+    }
     auto failWith = [&callback](const QString& msg) {
         if (callback) callback(QString(), QString(), true, -1, msg);
     };
-    if (apiBase.trimmed().isEmpty()) {
-        failWith("API 地址未配置，请在设置中检查服务商与 API Base");
+    const auto validationError = validateChat(params);
+    if (!validationError.isEmpty()) {
+        failWith(validationError);
         return -1;
     }
-    if (model.trimmed().isEmpty()) {
-        failWith("未选择模型，请在设置中配置翻译/AI 模型");
-        return -1;
-    }
-    bool hasContent = false;
-    for (const auto& m : messages) {
-        if (!m.toObject().value("content").toString().trimmed().isEmpty()) {
-            hasContent = true;
-            break;
-        }
-    }
-    if (messages.isEmpty() || !hasContent) {
-        failWith("消息内容为空，无法发送 API 请求");
-        return -1;
-    }
-
-    QUrl url = providerEndpoint(apiBase, QStringLiteral("chat/completions"));
-    if (url.isEmpty()) {
-        failWith("API 地址无效，请填写 http:// 或 https:// 开头的接口根地址");
-        return -1;
-    }
+    const QUrl url = providerEndpoint(apiBase, "chat/completions");
     QNetworkRequest req(url);
-    setupRequest(req, apiKey, timeoutSecs);
+    setupRequest(req, apiKey, 0);
 
-    // stream_options 由 buildRequestBody 按服务商能力决定是否附加。
-    QJsonObject body = buildRequestBody(params, true);
+    // 流式与非流式请求共用参数校验，配置错误不进入网络层。
+    QString configError;
+    QJsonObject body = buildRequestBody(params, true, &configError);
+    if (!configError.isEmpty()) {
+        failWith(configError);
+        return -1;
+    }
 
     QByteArray bodyData = QJsonDocument(body).toJson(QJsonDocument::Compact);
 
-    SNAP_LOG_DEBUG(QString("ApiClient::chatCreateStream: url=%1 model=%2 msgs=%3")
+    qCDebug(aiClientLog).noquote() << (QString("ApiClient::chatCreateStream: url=%1 model=%2 msgs=%3")
                        .arg(url.toString(), model).arg(messages.size()));
 
     QNetworkReply* reply = m_nam->post(req, bodyData);
@@ -400,19 +337,15 @@ int ApiClient::chatCreateStream(const ChatParams& params, StreamChunkCallback ca
     };
     QObject::connect(reply, &QNetworkReply::readyRead, &streamContext,
                      [&] { consumeAvailable(false); });
-    runEventLoop(reply, timeoutSecs, cancelFlag);
+    const auto wait = waitForReply(reply, {timeoutSecs, params.responseIdleTimeoutSecs, 0}, cancelFlag);
     consumeAvailable(true);
 
     int errorCode = 0;
     QString errorMsg;
 
-    if (reply->error() == QNetworkReply::OperationCanceledError) {
-        if (cancelFlag && cancelFlag->load()) {
-            errorCode = -3; // 用户取消
-        } else {
-            errorCode = -2; // 超时
-            errorMsg = "请求超时";
-        }
+    if (wait.errorCode != 0) {
+        errorCode = wait.errorCode;
+        errorMsg = wait.error;
     } else if (reply->error() != QNetworkReply::NoError) {
         errorCode = -1;
         QByteArray errBody = reply->readAll();
@@ -440,14 +373,10 @@ int ApiClient::chatCreateStream(const ChatParams& params, StreamChunkCallback ca
         callback(contentAccum, thinkingAccum, true, errorCode, errorMsg);
     }
 
-    SNAP_LOG_DEBUG(QString("ApiClient::chatCreateStream: done content=%1 chars error=%2")
+    qCDebug(aiClientLog).noquote() << (QString("ApiClient::chatCreateStream: done content=%1 chars error=%2")
                        .arg(contentAccum.size()).arg(errorCode));
     return errorCode;
 }
-
-// ============================================================================
-// 获取模型列表
-// ============================================================================
 
 ApiClient::ModelsResult ApiClient::listModels(const QString& apiKey,
                                                const QString& apiBase,
@@ -472,10 +401,10 @@ ApiClient::ModelsResult ApiClient::listModels(const QString& apiKey,
     QNetworkRequest req(url);
     setupRequest(req, apiKey, timeoutSecs);
 
-    SNAP_LOG_DEBUG(QString("ApiClient::listModels: url=%1").arg(url.toString()));
+    qCDebug(aiClientLog).noquote() << (QString("ApiClient::listModels: url=%1").arg(url.toString()));
 
     QNetworkReply* reply = m_nam->get(req);
-    runEventLoop(reply, timeoutSecs);
+    waitForReply(reply, {0, 0, qBound(1, timeoutSecs, 86400)});
 
     if (reply->error() == QNetworkReply::OperationCanceledError) {
         result.errorCode = -2;
@@ -497,7 +426,7 @@ ApiClient::ModelsResult ApiClient::listModels(const QString& apiKey,
         } else {
             result.errorMsg = QString("获取模型列表失败 (%1): %2").arg(httpStatus).arg(errDetail);
         }
-        SNAP_LOG_ERROR(QString("ApiClient::listModels: FAILED %1").arg(result.errorMsg));
+        qCWarning(aiClientLog).noquote() << (QString("ApiClient::listModels: FAILED %1").arg(result.errorMsg));
         reply->deleteLater();
         return result;
     }
@@ -513,23 +442,11 @@ ApiClient::ModelsResult ApiClient::listModels(const QString& apiKey,
         return result;
     }
 
-    QJsonObject resp = doc.object();
-    QJsonArray data = resp["data"].toArray();
-    for (const QJsonValue& v : data) {
-        QJsonObject m = v.toObject();
-        QString id = m["id"].toString();
-        if (!id.isEmpty()) {
-            result.modelIds.append(id);
-        }
-    }
+    result = parseModels(doc.object());
 
-    SNAP_LOG_DEBUG(QString("ApiClient::listModels: OK %1 models").arg(result.modelIds.size()));
+    qCDebug(aiClientLog).noquote() << (QString("ApiClient::listModels: OK %1 models").arg(result.modelIds.size()));
     return result;
 }
-
-// ============================================================================
-// 异步获取模型列表
-// ============================================================================
 
 void ApiClient::listModelsAsync(const QString& apiKey, const QString& apiBase,
                                 int timeoutSecs,
@@ -556,9 +473,16 @@ void ApiClient::listModelsAsync(const QString& apiKey, const QString& apiBase,
     QNetworkRequest req(url);
     setupRequest(req, apiKey, timeoutSecs);
 
-    SNAP_LOG_DEBUG(QString("ApiClient::listModelsAsync: url=%1").arg(url.toString()));
+    qCDebug(aiClientLog).noquote() << (QString("ApiClient::listModelsAsync: url=%1").arg(url.toString()));
 
     QNetworkReply* reply = m_nam->get(req);
+
+    // Discovery has a bounded total duration even if a server trickles bytes.
+    auto* deadline = new QTimer(reply);
+    deadline->setSingleShot(true);
+    QObject::connect(deadline, &QTimer::timeout, reply, &QNetworkReply::abort);
+    QObject::connect(reply, &QNetworkReply::finished, deadline, &QTimer::stop);
+    deadline->start(qBound(1, timeoutSecs, 86400) * 1000);
 
     // 回调以 this 为 context：本对象析构时连接自动断开（reply 作为 m_nam 子对象
     // 随之销毁），回调不会在对象销毁后被触发；reply 全部分支 deleteLater 防泄漏。
@@ -591,7 +515,7 @@ void ApiClient::listModelsAsync(const QString& apiKey, const QString& apiBase,
                 result.errorMsg = QString("获取模型列表失败 (%1): %2")
                                       .arg(httpStatus).arg(errDetail);
             }
-            SNAP_LOG_ERROR(QString("ApiClient::listModelsAsync: FAILED %1").arg(result.errorMsg));
+            qCWarning(aiClientLog).noquote() << (QString("ApiClient::listModelsAsync: FAILED %1").arg(result.errorMsg));
             reply->deleteLater();
             if (callback) callback(result);
             return;
@@ -609,16 +533,9 @@ void ApiClient::listModelsAsync(const QString& apiKey, const QString& apiBase,
             return;
         }
 
-        QJsonObject resp = doc.object();
-        QJsonArray data = resp["data"].toArray();
-        for (const QJsonValue& v : data) {
-            QString id = v.toObject()["id"].toString();
-            if (!id.isEmpty()) {
-                result.modelIds.append(id);
-            }
-        }
+        result = parseModels(doc.object());
 
-        SNAP_LOG_DEBUG(QString("ApiClient::listModelsAsync: OK %1 models")
+        qCDebug(aiClientLog).noquote() << (QString("ApiClient::listModelsAsync: OK %1 models")
                            .arg(result.modelIds.size()));
         if (callback) callback(result);
     });

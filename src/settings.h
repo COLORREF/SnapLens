@@ -164,24 +164,30 @@ inline const QVector<SettingDef> SETTING_DEFS = {
     {"ai_model",            ""},  // 模型名称（用户手动输入或通过 API 自动获取）
     {"ai_custom_models",    ""},  // 自定义服务的候选模型，逗号或换行分隔
     {"ai_target_lang",      "简体中文"},
-    {"ai_timeout",          30,     validators::clampInt(5, 120)},
+    {"ai_timeout",          30,     validators::clampInt(5, 120)}, // 连接与发送阶段
+    {"ai_response_idle_timeout", 0, validators::clampInt(0, 3600)},
+    {"ai_enabled_parameters", ""},
+    {"ai_extra_body", ""},
+    {"ai_thinking_format", "auto"},
+    {"ai_max_tokens_field", "auto"},
+    {"ai_model_profiles", "{}"},
+    {"ai_model_metadata", "{}"},
     {"ai_temperature",      0.1,    validators::clampFloat(0.0, 2.0)},
-    {"ai_max_tokens",       4096,   validators::clampInt(1, 1048576)},
-    {"ai_top_p",            1.0,    validators::clampFloat(0.01, 1.0)},
+    {"ai_max_tokens",       4096,   validators::clampInt(1, 2147483647)},
+    {"ai_top_p",            1.0,    validators::clampFloat(0.0, 1.0)},
     {"ai_frequency_penalty", 0.0,   validators::clampFloat(-2.0, 2.0)},
     {"ai_presence_penalty", 0.0,    validators::clampFloat(-2.0, 2.0)},
-    {"ai_seed",             0},     // 0 表示不指定（随机）
+    {"ai_seed",             0},     // 是否发送由 ai_enabled_parameters 决定，允许显式 0
     // 采样总开关（智谱 GLM 的 do_sample）：off 时服务商忽略 temperature/top_p；auto = 不发送，用服务商默认
     {"ai_do_sample",        "auto", validators::oneOf({"auto", "on", "off"})},
-    // 思考（推理）开关：auto = 不发送，on/off 显式启用或禁用（服务商不支持时忽略）
+    // 思考（推理）开关：auto = 不发送，on/off 显式启用或禁用，不支持时由上游报告错误
     {"ai_thinking",         "auto", validators::oneOf({"auto", "on", "off"})},
-    // 推理强度：auto = 不发送；越界的档位会按服务商支持情况就近映射
-    {"ai_reasoning_effort", "auto", validators::oneOf({
-        "auto", "none", "minimal", "low", "medium", "high", "xhigh", "max"})},
-    // 停止序列：每行一个（各家上限不同，界面按最严的 4 项校验）
+    // 推理强度：auto = 不发送；显式档位原样发送
+    {"ai_reasoning_effort", "auto"},
+    // 停止序列：每行一个，数量限制由模型决定
     {"ai_stop",             ""},
     // 流式响应附带 token 用量（stream_options.include_usage）；个别服务商不支持时可关闭
-    {"ai_stream_usage",     true},
+    {"ai_stream_usage",     false},
     {"ai_translation_prompt", QString::fromUtf8(DEFAULT_TRANSLATION_PROMPT)},
     {"ai_ocr_langs",        "chi_sim+eng+jpn+kor"},
     {"ai_confirm_before_translate", false},
@@ -290,7 +296,14 @@ inline const QVector<SettingDef> SETTING_DEFS = {
     X(QString, ai_model) \
     X(QString, ai_custom_models) \
     X(QString, ai_target_lang) \
+    X(int, ai_response_idle_timeout) \
     X(int, ai_timeout) \
+    X(QString, ai_enabled_parameters) \
+    X(QString, ai_extra_body) \
+    X(QString, ai_thinking_format) \
+    X(QString, ai_max_tokens_field) \
+    X(QString, ai_model_profiles) \
+    X(QString, ai_model_metadata) \
     X(double, ai_temperature) \
     X(int, ai_max_tokens) \
     X(double, ai_top_p) \

@@ -1,4 +1,7 @@
 #include <QHeaderView>
+#include <QJsonDocument>
+#include <QSignalBlocker>
+#include <QDateTime>
 #include "settings_view.h"
 #include "color_picker.h"
 #include "snapkit.h"
@@ -7,7 +10,8 @@
 #include "../ocr/ocr_engine.h"
 #include "../translate/providers.h"
 #include "../translate/ai_client.h"
-#include "../translate/translator.h"
+#include "../translate/ai_request_options.h"
+#include "../translate/model_capabilities.h"
 #include "../log/log_manager.h"
 
 #include <QCheckBox>
@@ -1078,6 +1082,7 @@ QWidget* SettingsView::buildAiSettingsTab()
     m_aiModelCombo->setPlaceholderText("输入模型名称，或点击右侧按钮获取");
     connect(m_aiCustomModelsEdit, &QLineEdit::editingFinished, this, [this] {
         if (m_aiProviderCombo->currentData().toString() != "custom") return;
+        const QSignalBlocker blocker(m_aiModelCombo);
         const QString selected = m_aiModelCombo->currentText();
         m_aiModelCombo->clear();
         for (const QString& value : m_aiCustomModelsEdit->text().split(QRegularExpression("[,，;；]"), Qt::SkipEmptyParts)) {
@@ -1087,7 +1092,7 @@ QWidget* SettingsView::buildAiSettingsTab()
         m_aiModelCombo->setCurrentText(selected);
     });
     modelRow->addWidget(m_aiModelCombo, 1);
-    m_fetchModelsBtn = secondaryButton("获取模型列表", modelHost);
+    m_fetchModelsBtn = secondaryButton("获取模型与能力", modelHost);
     m_fetchModelsBtn->setMinimumWidth(120);
     m_fetchModelsBtn->setFocusPolicy(Qt::NoFocus);
     connect(m_fetchModelsBtn, &QPushButton::clicked, this, &SettingsView::onFetchModels);
@@ -1129,23 +1134,26 @@ QWidget* SettingsView::buildAiSettingsTab()
     page->addBlock(m_aiParamHintRow, 0);
 
     // 常用参数：普通用户真正会调的两项，直接平铺。
-    page->addSection("常用参数", "输出长度与等待时间；上限随服务商自动调整。");
+    page->addSection("常用参数", "参数按接口地址和模型分别保存；可选参数默认不发送。");
 
     auto* maxTokensCard = spinRow(
         "最大输出 Token",
-        "单次输出上限（1 汉字 ≈ 2 token）；上限随服务商调整",
-        m_settings->ai_max_tokens, 1, 8192, 256, QString(),
+        "单次输出预算，不是上下文窗口；关闭自定义时由模型决定",
+        m_settings->ai_max_tokens, 1, 2147483647, 256, QString(),
         &m_aiMaxTokens, page);
     page->addBlock(maxTokensCard);
     m_aiMaxTokensCard = maxTokensCard;
 
-    auto* timeoutCard = spinRow("请求超时", "单次请求的最长等待时间",
+    auto* timeoutCard = spinRow("连接与发送超时", "限制建立连接和发送请求的时间，不限制 AI 思考与生成总时长",
                                 m_settings->ai_timeout, 5, 120, 5, " 秒",
                                 &m_aiTimeout, page);
     page->addBlock(timeoutCard);
+    page->addBlock(spinRow("响应空闲超时", "连续未收到响应数据才计时；思考文本和心跳会重置。0 表示不限，适合长推理及非流式请求",
+        m_settings->ai_response_idle_timeout, 0, 3600, 30, " 秒", &m_aiResponseIdleTimeout, page));
+    m_aiResponseIdleTimeout->setSpecialValueText("不限");
 
     page->addSection("思考与推理",
-                     "支持思考参数的服务商可控制是否推理与推理强度；强制思考的模型会隐藏开关。");
+                     "显式设置前请确认当前模型支持；自动表示不发送，未知模型可使用高级 JSON。");
 
     auto* thinkingCard = new SettingsCard(
         "思考模式", "开启后模型先推理再作答；自动表示不发送该字段", page);
@@ -1164,7 +1172,7 @@ QWidget* SettingsView::buildAiSettingsTab()
     m_aiThinkingCard = thinkingCard;
 
     auto* effortCard = new SettingsCard(
-        "推理强度", "自动表示不发送，由服务商取默认档位", page);
+        "推理强度", "优先显示上游声明的档位；无资料时显示通用候选，可手动输入", page);
     m_aiEffortCombo = new ElaComboBox(effortCard);
     m_aiEffortCombo->setObjectName(QStringLiteral("aiEffortCombo"));
     m_aiEffortCombo->setMinimumWidth(200);
@@ -1177,18 +1185,18 @@ QWidget* SettingsView::buildAiSettingsTab()
     m_aiAdvanced = new AdvancedSection(
         "高级设置",
         "采样、惩罚项与停止序列等细粒度参数。留「自动」即不发送，使用服务商默认值；"
-        "不适用的选项会按当前服务商自动隐藏。",
+        "显式值原样发送，是否支持由当前模型决定。",
         page);
     m_aiAdvanced->setObjectName(QStringLiteral("aiAdvancedSection"));
     page->addBlock(m_aiAdvanced);
 
     auto* doSampleCard = new SettingsCard(
-        "启用采样", "关闭后服务商忽略 temperature / top_p，输出更确定（GLM 的 do_sample）", m_aiAdvanced);
+        "启用采样", "显式发送 do_sample；是否支持及与温度的关系由当前模型决定", m_aiAdvanced);
     m_aiDoSampleCombo = new ElaComboBox(doSampleCard);
     m_aiDoSampleCombo->setObjectName(QStringLiteral("aiDoSampleCombo"));
     m_aiDoSampleCombo->addItem("自动（不发送，用服务商默认）", "auto");
     m_aiDoSampleCombo->addItem("开启采样", "on");
-    m_aiDoSampleCombo->addItem("关闭采样（更确定）", "off");
+    m_aiDoSampleCombo->addItem("关闭采样（发送 false）", "off");
     m_aiDoSampleCombo->setMinimumWidth(220);
     {
         const int idx = m_aiDoSampleCombo->findData(m_settings->ai_do_sample);
@@ -1200,14 +1208,14 @@ QWidget* SettingsView::buildAiSettingsTab()
 
     auto* tempCard = decimalSliderRow(
         "温度 Temperature",
-        "控制输出随机性；越低越稳定。翻译建议 ≤ 0.3（区间随服务商调整）",
+        "可选采样参数；只有勾选自定义才发送",
         m_settings->ai_temperature, 0.0, 2.0, 2, QString(), &m_aiTemperature, m_aiAdvanced);
     m_aiAdvanced->addRow(tempCard);
 
     auto* topPCard = decimalSliderRow(
         "Top P（核采样）",
-        "与温度二选一调整；翻译建议 1.0（区间随服务商调整）",
-        m_settings->ai_top_p, 0.01, 1.0, 2, QString(), &m_aiTopP, m_aiAdvanced);
+        "通常与温度二选一调整；只有勾选自定义才发送",
+        m_settings->ai_top_p, 0.0, 1.0, 2, QString(), &m_aiTopP, m_aiAdvanced);
     m_aiAdvanced->addRow(topPCard);
 
     auto* freqCard = decimalSliderRow(
@@ -1225,17 +1233,17 @@ QWidget* SettingsView::buildAiSettingsTab()
     m_aiAdvanced->addRow(presCard);
 
     auto* seedCard = new SettingsCard("随机种子 Seed",
-                                      "相同种子尽量复现相同结果；0 为不指定（随机）",
+                                      "勾选自定义才发送；0 也可作为显式种子",
                                       m_aiAdvanced);
     m_aiSeedEdit = new ElaLineEdit(seedCard);
     m_aiSeedEdit->setText(QString::number(m_settings->ai_seed));
-    m_aiSeedEdit->setPlaceholderText("0（默认随机）");
+    m_aiSeedEdit->setPlaceholderText("整数种子");
     m_aiSeedEdit->setFixedWidth(120);
     seedCard->addControl(m_aiSeedEdit);
     m_aiAdvanced->addRow(seedCard);
 
     auto* stopPanel = new PanelCard("停止序列",
-                                    "每行一个，最多 4 项；模型遇到这些字符串即停止生成", m_aiAdvanced);
+                                    "留空不发送；每行一项，数量限制由当前模型决定", m_aiAdvanced);
     m_aiStopEdit = new ElaPlainTextEdit(stopPanel);
     m_aiStopEdit->setObjectName(QStringLiteral("aiStopEdit"));
     m_aiStopEdit->setPlainText(m_settings->ai_stop);
@@ -1257,6 +1265,91 @@ QWidget* SettingsView::buildAiSettingsTab()
     m_aiPenaltyRows = {freqCard, presCard};
     m_aiSeedRows = {seedCard};
 
+    for (const auto& entry : QList<QPair<QString, QWidget*>>{
+            {"max_tokens", maxTokensCard}, {"temperature", tempCard},
+            {"top_p", topPCard}, {"frequency_penalty", freqCard},
+            {"presence_penalty", presCard}, {"seed", seedCard}}) {
+        auto* check = new ElaCheckBox("自定义（发送）", entry.second);
+        check->setObjectName("aiSend_" + entry.first);
+        static_cast<SettingsCard*>(entry.second)->addControl(check);
+        m_aiParameterChecks[entry.first] = check;
+        QWidget* editor = entry.first == "max_tokens" ? static_cast<QWidget*>(m_aiMaxTokens)
+            : entry.first == "temperature" ? static_cast<QWidget*>(m_aiTemperature)
+            : entry.first == "top_p" ? static_cast<QWidget*>(m_aiTopP)
+            : entry.first == "frequency_penalty" ? static_cast<QWidget*>(m_aiFrequencyPenalty)
+            : entry.first == "presence_penalty" ? static_cast<QWidget*>(m_aiPresencePenalty)
+            : static_cast<QWidget*>(m_aiSeedEdit);
+        editor->setEnabled(false);
+        connect(check, &QCheckBox::toggled, editor, &QWidget::setEnabled);
+    }
+    auto* outputFieldCard = new SettingsCard("输出长度字段", "预设只建议字段形式；上限取决于实际模型", m_aiAdvanced);
+    m_aiOutputField = new ElaComboBox(outputFieldCard);
+    m_aiOutputField->addItem("自动（上游声明 → 预设）", "auto");
+    m_aiOutputField->addItem("max_tokens", "max_tokens");
+    m_aiOutputField->addItem("max_completion_tokens", "max_completion_tokens");
+    outputFieldCard->addControl(m_aiOutputField);
+    m_aiAdvanced->addRow(outputFieldCard);
+    auto* thinkingFormatCard = new SettingsCard("思考开关字段", "其他形式请留思考模式为自动，在下方填写 JSON", m_aiAdvanced);
+    m_aiThinkingFormat = new ElaComboBox(thinkingFormatCard);
+    m_aiThinkingFormat->addItem("自动（上游声明 → 预设）", "auto");
+    m_aiThinkingFormat->addItem("thinking.type", "thinking");
+    m_aiThinkingFormat->addItem("enable_thinking", "enable_thinking");
+    thinkingFormatCard->addControl(m_aiThinkingFormat);
+    m_aiAdvanced->addRow(thinkingFormatCard);
+
+    m_aiEffortCombo->setEditable(true);
+    for (const QString& value : {"auto", "none", "minimal", "low", "medium", "high", "xhigh", "max"})
+        m_aiEffortCombo->addItem(value, value);
+    m_aiEffortCombo->setToolTip("auto 表示不发送。其他值为常见示例，不代表当前模型支持；可直接输入。");
+    auto* extraCard = new PanelCard("自定义请求参数（当前模型）",
+        "JSON 对象覆盖上述字段；嵌套对象整体替换；顶层 null 删除字段。不能覆盖 model/messages/stream。不要填写密钥。",
+        m_aiAdvanced);
+    m_aiExtraBody = new ElaPlainTextEdit(extraCard);
+    m_aiExtraBody->setObjectName("aiExtraBody");
+    m_aiExtraBody->setPlaceholderText("{\n  \"reasoning_effort\": \"high\"\n}");
+    m_aiExtraBody->setMinimumHeight(130);
+    extraCard->setContent(m_aiExtraBody);
+    m_aiAdvanced->addRow(extraCard);
+    auto* previewCard = new PanelCard("请求参数预览",
+        "点击刷新查看实际字段。消息为示例，不含 API Key；预览不发送网络请求。",
+        m_aiAdvanced);
+    auto* previewHost = new QWidget(previewCard);
+    auto* previewLayout = new QVBoxLayout(previewHost);
+    auto* previewButton = new ElaPushButton("刷新请求预览", previewHost);
+    m_aiRequestPreview = new ElaPlainTextEdit(previewHost);
+    m_aiRequestPreview->setReadOnly(true);
+    m_aiRequestPreview->setMinimumHeight(160);
+    previewLayout->addWidget(previewButton);
+    previewLayout->addWidget(m_aiRequestPreview);
+    previewCard->setContent(previewHost);
+    m_aiAdvanced->addRow(previewCard);
+    auto* metadataCard = new PanelCard("上游模型资料（缓存）",
+        "获取模型与能力时刷新，失败保留缓存。仅展示接口实际返回的内容；资料可能过期或不完整。",
+        m_aiAdvanced);
+    m_aiMetadataPreview = new ElaPlainTextEdit(metadataCard);
+    m_aiMetadataPreview->setObjectName("aiMetadataPreview");
+    m_aiMetadataPreview->setReadOnly(true);
+    m_aiMetadataPreview->setMinimumHeight(150);
+    metadataCard->setContent(m_aiMetadataPreview);
+    m_aiAdvanced->addRow(metadataCard);
+    connect(previewButton, &QPushButton::clicked, this, &SettingsView::previewAiRequest);
+    for (auto* slider : {m_aiTemperature, m_aiTopP, m_aiFrequencyPenalty, m_aiPresencePenalty})
+        connect(slider, &QSlider::valueChanged, m_aiRequestPreview, &QPlainTextEdit::clear);
+    for (auto* combo : {m_aiThinkingCombo, m_aiDoSampleCombo, m_aiEffortCombo, m_aiThinkingFormat, m_aiOutputField})
+        connect(combo, &QComboBox::currentTextChanged, m_aiRequestPreview, &QPlainTextEdit::clear);
+    for (auto* check : m_aiParameterChecks)
+        connect(check, &QCheckBox::toggled, m_aiRequestPreview, &QPlainTextEdit::clear);
+    connect(m_aiExtraBody, &QPlainTextEdit::textChanged, m_aiRequestPreview, &QPlainTextEdit::clear);
+    connect(m_aiStopEdit, &QPlainTextEdit::textChanged, m_aiRequestPreview, &QPlainTextEdit::clear);
+    connect(m_aiSeedEdit, &QLineEdit::textChanged, m_aiRequestPreview, &QPlainTextEdit::clear);
+    connect(m_aiMaxTokens, &QSpinBox::valueChanged, m_aiRequestPreview, &QPlainTextEdit::clear);
+    connect(m_aiStreamUsage, &ElaToggleSwitch::toggled, m_aiRequestPreview, &QPlainTextEdit::clear);
+    connect(m_aiModelCombo, &QComboBox::currentTextChanged, this, [this] { switchAiProfile(); });
+    connect(m_aiApiBaseEdit, &QLineEdit::editingFinished, this, [this] { ++m_fetchGen; switchAiProfile(); });
+    m_aiProfiles = QJsonDocument::fromJson(m_settings->ai_model_profiles.toUtf8()).object();
+    m_aiMetadata = QJsonDocument::fromJson(m_settings->ai_model_metadata.toUtf8()).object();
+    applyAiProfile(m_settings->toDict());
+    switchAiProfile();
     appendPageReset(page, "ai_settings", "AI 设置页面");
     refreshAiPage();
     return page;
@@ -1295,6 +1388,7 @@ QWidget* SettingsView::buildTranslateTab()
                              "实时推送模型的思考内容到「AI 思考」页签",
                              m_settings->ai_stream_thinking,
                              &m_aiStreamThinking, page));
+    connect(m_aiStreamThinking, &ElaToggleSwitch::toggled, m_aiRequestPreview, &QPlainTextEdit::clear);
 
     page->addSection("提示词", "占位符会在翻译时被替换，可按需微调语气与术语偏好。");
     {
@@ -1495,6 +1589,7 @@ void SettingsView::browseDir(QLineEdit* edit, const QString& title)
 
 void SettingsView::onProviderChanged(int)
 {
+    const QSignalBlocker modelBlocker(m_aiModelCombo);
     ++m_fetchGen;
     QString newPid = m_aiProviderCombo->currentData().toString();
     auto cfg = getProviderConfig(newPid);
@@ -1517,111 +1612,167 @@ void SettingsView::onProviderChanged(int)
     }
     m_aiCustomModelsCard->setVisible(newPid == "custom");
     m_currentProvider = newPid;
-    refreshAiPage();
+    switchAiProfile();
 }
 
 void SettingsView::refreshAiPage()
 {
-    if (!m_aiProviderCombo || !m_aiParamHint) return;
-
-    const ProviderConfig cfg =
-        getProviderConfig(m_aiProviderCombo->currentData().toString());
-    const bool samplingToggle = cfg.samplingToggle;
-
-    // —— 从属行显隐：不支持的服务商不展示对应参数，避免误以为调整有效 ——
-    if (m_aiDoSampleCard) m_aiDoSampleCard->setVisible(samplingToggle);
-    setRowsVisible(m_aiTemperatureRows, cfg.temperature || cfg.topP);
-    setRowsVisible(m_aiPenaltyRows, cfg.frequencyPenalty || cfg.presencePenalty);
-    setRowsVisible(m_aiSeedRows, cfg.seed);
-    // 思考开关与推理强度是两个独立能力：Kimi 支持 thinking 但没有 reasoning_effort，
-    // 因此逐行判断，避免整组一起显示。
-    if (m_aiThinkingCard) m_aiThinkingCard->setVisible(cfg.thinkingStyle != ThinkingStyle::None);
-    if (m_aiEffortCard) m_aiEffortCard->setVisible(cfg.reasoningEffort);
-    setRowsVisible(m_aiStopRows, cfg.stop);
-    setRowsVisible(m_aiStreamUsageRows, cfg.usageInStream);
-
-    // 惩罚项逐行判断：有的服务商只支持其一
-    for (QWidget* row : m_aiPenaltyRows) {
-        if (!row) continue;
-        const bool isFrequency = (row == m_aiPenaltyRows.value(0));
-        row->setVisible(isFrequency ? cfg.frequencyPenalty : cfg.presencePenalty);
-    }
-
-    // —— 温度 / 核采样区间随服务商调整（GLM 温度上限为 1，Kimi 固定不可改）——
-    if (m_aiTemperature && cfg.temperature) {
-        m_aiTemperature->setRange(static_cast<int>(cfg.temperatureMin * 100),
-                                  static_cast<int>(cfg.temperatureMax * 100));
-        m_aiTemperature->setValue(qBound(static_cast<int>(cfg.temperatureMin * 100),
-                                         m_aiTemperature->value(),
-                                         static_cast<int>(cfg.temperatureMax * 100)));
-    }
-    if (m_aiTopP && cfg.topP) {
-        m_aiTopP->setRange(static_cast<int>(cfg.topPMin * 100),
-                           static_cast<int>(cfg.topPMax * 100));
-        m_aiTopP->setValue(qBound(static_cast<int>(cfg.topPMin * 100),
-                                  m_aiTopP->value(),
-                                  static_cast<int>(cfg.topPMax * 100)));
-    }
-
-    // —— 输出上限：字段名与最大值按服务商能力调整 ——
-    if (m_aiMaxTokens) {
-        m_aiMaxTokens->setRange(1, qMax(1, cfg.maxTokensLimit));
-        m_aiMaxTokens->setValue(qBound(1, m_aiMaxTokens->value(), cfg.maxTokensLimit));
-    }
-    if (m_aiMaxTokensCard) {
-        QString field = QStringLiteral("max_tokens");
-        if (cfg.maxTokensField == QLatin1String("max_completion_tokens"))
-            field = QStringLiteral("max_completion_tokens");
-        m_aiMaxTokensCard->setToolTip(
-            QStringLiteral("该服务商使用 %1，上限 %2 token")
-                .arg(field).arg(cfg.maxTokensLimit));
-    }
-
-    // —— 思考相关控件：不支持就不显示；强制思考的模型禁用「关闭思考」——
-    if (m_aiThinkingCombo) {
-        if (auto* model = m_aiThinkingCombo->model()) {
-            const QModelIndex offIdx = model->index(m_aiThinkingCombo->findData("off"), 0);
-            if (offIdx.isValid())
-                model->setData(offIdx,
-                    !cfg.thinkingCanDisable
-                        ? QVariant(0)
-                        : QVariant(Qt::ItemIsSelectable | Qt::ItemIsEnabled),
-                    Qt::UserRole - 1);
-        }
-        // 之前选中「关闭思考」但当前模型强制思考时，回退到自动
-        if (!cfg.thinkingCanDisable
-            && m_aiThinkingCombo->currentData().toString() == QLatin1String("off")) {
-            m_aiThinkingCombo->setCurrentIndex(m_aiThinkingCombo->findData("auto"));
-        }
-    }
+    if (!m_aiParamHint || !m_aiModelCombo) return;
+    QString hint = "接口格式：OpenAI Chat Completions。自动参数不发送；显式值不按服务商静默裁剪。";
+    const auto endpoint = providerEndpoint(m_aiApiBaseEdit->text(), "models").toString();
+    const auto cache = m_aiMetadata.value(endpoint).toObject();
+    const auto info = ModelCapabilities::cachedModel(m_aiMetadata, m_aiApiBaseEdit->text(),
+                                                    m_aiModelCombo->currentText());
+    const auto caps = ModelCapabilities::suggestions(info, m_aiApiBaseEdit->text(), m_aiModelCombo->currentText());
+    const bool upstreamEfforts = caps.effortSource == ModelCapabilities::Source::Upstream;
+    const bool upstreamThinkingModes = caps.thinkingSource == ModelCapabilities::Source::Upstream;
+    const bool documentedEfforts = caps.effortSource == ModelCapabilities::Source::Documentation;
+    const bool documentedThinkingModes = caps.thinkingSource == ModelCapabilities::Source::Documentation;
+    if (m_aiMetadataPreview) m_aiMetadataPreview->setPlainText(info.isEmpty()
+        ? QStringLiteral("尚未获取该端点/模型的资料，可点击“获取模型与能力”。")
+        : QStringLiteral("获取时间：%1\n来源：%2\n\n%3").arg(
+            cache.value("fetched_at").toString(), endpoint,
+            QString::fromUtf8(QJsonDocument(info).toJson(QJsonDocument::Indented))));
+    auto number = [](qint64 value) { return value > 0 ? QString::number(value) : QStringLiteral("未知"); };
+    hint += QString("\n上游资料：上下文窗口 %1；输入上限 %2；输出上限 %3。")
+        .arg(number(caps.contextWindow), number(caps.maxInputTokens), number(caps.maxOutputTokens));
+    if (!info.isEmpty()) hint += " 获取时间：" + cache.value("fetched_at").toString();
+    if (caps.parameters)
+        hint += "\n上游声明的参数：" + (caps.parameters->isEmpty() ? QStringLiteral("空列表") : caps.parameters->join(", "));
+    const QString effortSource = upstreamEfforts ? QStringLiteral("上游缓存中的档位声明")
+        : (documentedEfforts ? QStringLiteral("GLM 模型作者文档候选（列表接口未返回档位）")
+        : (caps.reasoning && !*caps.reasoning ? QStringLiteral("上游声明不支持推理")
+                                            : QStringLiteral("通用候选（当前模型未声明档位）")));
     if (m_aiEffortCombo) {
-        const QString previous = m_aiEffortCombo->currentData().toString();
+        const QSignalBlocker blocker(m_aiEffortCombo);
+        const QString selected = m_aiEffortCombo->currentText().trimmed();
         m_aiEffortCombo->clear();
-        m_aiEffortCombo->addItem("自动（不发送）", "auto");
-        for (const QString& option : cfg.effortOptions)
-            m_aiEffortCombo->addItem(option, option);
-        const int idx = m_aiEffortCombo->findData(previous.isEmpty()
-                                                      ? m_settings->ai_reasoning_effort
-                                                      : previous);
-        m_aiEffortCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+        m_aiEffortCombo->addItem("auto", "auto");
+        for (const auto& effort : caps.effortChoices())
+            if (effort != "auto") m_aiEffortCombo->addItem(effort, effort);
+        // Refresh suggestions without converting, discarding or activating a saved choice.
+        if (!selected.isEmpty() && m_aiEffortCombo->findText(selected) < 0)
+            m_aiEffortCombo->addItem(selected, selected);
+        m_aiEffortCombo->setCurrentText(selected.isEmpty() ? QStringLiteral("auto") : selected);
+        m_aiEffortCombo->setToolTip(effortSource + "。auto 不发送；其他值按 reasoning_effort 原样发送。"
+            "目录中的内部档位 ID 不一定是 API 取值；不同字段或关闭语义请使用高级 JSON。"
+            + (caps.defaultEffort.isEmpty() ? QString{} : (upstreamEfforts ? " 上游声明的默认档位：" : " 文档给出的默认档位：") + caps.defaultEffort));
+        if (caps.efforts && selected != "auto" && !selected.isEmpty() && !caps.efforts->contains(selected))
+            hint += upstreamEfforts ? "\n当前档位不在上游声明中，已保留你的设置；请确认该通道支持此值。"
+                : "\n当前档位不在文档候选中，已保留你的设置；请确认该通道支持此值。";
     }
-
-    // —— 顶部提示：说明当前服务商的参数支持情况与文档来源 ——
-    QStringList notes;
-    if (!cfg.temperature || !cfg.topP) {
-        notes.append(QStringLiteral("该服务商固定 temperature / top_p，传入会报错，已自动隐藏"));
+    if (m_aiThinkingCombo) {
+        const QSignalBlocker blocker(m_aiThinkingCombo);
+        const QString selected = m_aiThinkingCombo->currentData().toString();
+        const QStringList modes = caps.thinkingModes.value_or(
+            caps.reasoning && !*caps.reasoning ? QStringList{} : QStringList{"on", "off"});
+        m_aiThinkingCombo->clear();
+        m_aiThinkingCombo->addItem("自动（不发送）", "auto");
+        for (const auto& mode : modes)
+            m_aiThinkingCombo->addItem(mode == "on" ? "开启思考" : "关闭思考", mode);
+        if (!selected.isEmpty() && m_aiThinkingCombo->findData(selected) < 0)
+            m_aiThinkingCombo->addItem(selected == "on" ? "开启思考（已保存）" : "关闭思考（已保存）", selected);
+        m_aiThinkingCombo->setCurrentIndex(qMax(0, m_aiThinkingCombo->findData(selected)));
+        m_aiThinkingCombo->setToolTip(upstreamThinkingModes ? "选项来自上游明确声明的开关形式。"
+            : documentedThinkingModes ? "选项来自 GLM 模型作者文档，非模型列表接口声明；此模型不能关闭思考。"
+            : "上游未声明可用的开关形式。通用选项是否可用取决于模型；可在高级设置指定字段。易混淆：支持思考不代表允许关闭思考。");
+        if (documentedThinkingModes && selected == "off")
+            hint += "\n该 GLM 模型文档不支持关闭思考；已保留你的旧设置，发送前请改为自动或开启。";
     }
-    if (!cfg.frequencyPenalty && !cfg.presencePenalty) {
-        notes.append(QStringLiteral("不支持频率/存在惩罚，已自动隐藏"));
-    }
-    if (cfg.thinkingStyle != ThinkingStyle::None && !cfg.thinkingCanDisable) {
-        notes.append(QStringLiteral("当前模型系列强制思考，无法关闭"));
-    }
-    QString hint = notes.isEmpty()
-        ? QStringLiteral("参数按 %1 官方文档裁剪；未列出的字段不会发送。")
-              .arg(cfg.label)
-        : QStringLiteral("%1；参数按 %2 官方文档裁剪。").arg(notes.join("；"), cfg.label);
+    hint += "\n推理档位来源：" + effortSource;
+    if (!caps.defaultEffort.isEmpty()) hint += (upstreamEfforts ? "；声明的默认值：" : "；文档默认值：")
+        + caps.defaultEffort + "（不会自动发送）";
+    if (caps.reasoning && !*caps.reasoning)
+        hint += "\n上游声明不支持推理；如仍需发送，请手动设置并确认该通道的实际支持情况。";
+    if (caps.maxOutputTokens > 0 && m_aiParameterChecks.value("max_tokens")
+        && m_aiParameterChecks.value("max_tokens")->isChecked() && m_aiMaxTokens->value() > caps.maxOutputTokens)
+        hint += "\n当前输出预算超过缓存声明的上限，已保留你的设置；请核对上限或刷新模型资料。";
+    hint += "\n资料仅供参考；支持推理不代表允许关闭。上下文容量、输入上限和输出预算分别处理。";
     m_aiParamHint->setText(hint);
+}
+
+QJsonObject SettingsView::captureAiProfile() const
+{
+    QStringList enabled;
+    for (auto it = m_aiParameterChecks.begin(); it != m_aiParameterChecks.end(); ++it)
+        if (it.value()->isChecked()) enabled.append(it.key());
+    return {
+        {"ai_enabled_parameters", enabled.join(',')},
+        {"ai_temperature", m_aiTemperature->value() / 100.0},
+        {"ai_top_p", m_aiTopP->value() / 100.0},
+        {"ai_frequency_penalty", m_aiFrequencyPenalty->value() / 100.0},
+        {"ai_presence_penalty", m_aiPresencePenalty->value() / 100.0},
+        {"ai_max_tokens", m_aiMaxTokens->value()},
+        {"ai_seed", m_aiSeedEdit->text()},
+        {"ai_do_sample", m_aiDoSampleCombo->currentData().toString()},
+        {"ai_thinking", m_aiThinkingCombo->currentData().toString()},
+        {"ai_reasoning_effort", m_aiEffortCombo->currentText().trimmed()},
+        {"ai_thinking_format", m_aiThinkingFormat->currentData().toString()},
+        {"ai_max_tokens_field", m_aiOutputField->currentData().toString()},
+        {"ai_stop", m_aiStopEdit->toPlainText()},
+        {"ai_stream_usage", m_aiStreamUsage->getIsToggled()},
+        {"ai_extra_body", m_aiExtraBody->toPlainText()}
+    };
+}
+
+void SettingsView::applyAiProfile(const QJsonObject& profile)
+{
+    const Settings s(profile);
+    const auto enabled = s.ai_enabled_parameters.split(',');
+    for (auto it = m_aiParameterChecks.begin(); it != m_aiParameterChecks.end(); ++it)
+        it.value()->setChecked(enabled.contains(it.key()));
+    m_aiTemperature->setValue(qRound(s.ai_temperature * 100));
+    m_aiTopP->setValue(qRound(s.ai_top_p * 100));
+    m_aiFrequencyPenalty->setValue(qRound(s.ai_frequency_penalty * 100));
+    m_aiPresencePenalty->setValue(qRound(s.ai_presence_penalty * 100));
+    m_aiMaxTokens->setValue(s.ai_max_tokens);
+    m_aiSeedEdit->setText(profile.value("ai_seed").isString()
+        ? profile.value("ai_seed").toString() : QString::number(s.ai_seed));
+    m_aiDoSampleCombo->setCurrentIndex(qMax(0, m_aiDoSampleCombo->findData(s.ai_do_sample)));
+    if (m_aiThinkingCombo->findData(s.ai_thinking) < 0)
+        m_aiThinkingCombo->addItem(s.ai_thinking == "on" ? "开启思考" : "关闭思考", s.ai_thinking);
+    m_aiThinkingCombo->setCurrentIndex(qMax(0, m_aiThinkingCombo->findData(s.ai_thinking)));
+    m_aiEffortCombo->setCurrentText(s.ai_reasoning_effort);
+    m_aiThinkingFormat->setCurrentIndex(qMax(0, m_aiThinkingFormat->findData(s.ai_thinking_format)));
+    m_aiOutputField->setCurrentIndex(qMax(0, m_aiOutputField->findData(s.ai_max_tokens_field)));
+    m_aiStopEdit->setPlainText(s.ai_stop);
+    setToggle(m_aiStreamUsage, s.ai_stream_usage);
+    m_aiExtraBody->setPlainText(s.ai_extra_body);
+    m_aiRequestPreview->clear();
+}
+
+void SettingsView::switchAiProfile()
+{
+    if (m_loadingAiProfile || !m_aiExtraBody) return;
+    // JSON 数组编码避免地址/模型 ID 中分隔符引起键冲突；末尾斜杠统一。
+    const QString key = aiModelProfileKey(m_aiApiBaseEdit->text(), m_aiModelCombo->currentText());
+    if (key != m_aiProfileKey) {
+        if (!m_aiProfileKey.isEmpty()) m_aiProfiles[m_aiProfileKey] = captureAiProfile();
+        // 仅首次升级且无模型配置时保留旧配置；未知模型使用自动参数。
+        if (!m_aiProfileKey.isEmpty() || !m_aiProfiles.isEmpty())
+            applyAiProfile(m_aiProfiles.value(key).toObject());
+        m_aiProfileKey = key;
+    }
+    refreshAiPage();
+}
+
+static ApiClient::ChatParams previewParams(const QJsonObject& profile)
+{
+    return AiRequestOptions::fromSettings(Settings(profile)).toChatParams({});
+}
+
+void SettingsView::previewAiRequest()
+{
+    switchAiProfile();
+    auto p = previewParams(captureAiProfile());
+    p.provider = m_aiProviderCombo->currentData().toString();
+    p.model = m_aiModelCombo->currentText().trimmed();
+    p.modelMetadata = ModelCapabilities::cachedModel(m_aiMetadata, m_aiApiBaseEdit->text(), p.model);
+    p.messages = QJsonArray{QJsonObject{{"role", "user"}, {"content", "（示例消息）"}}};
+    QString error;
+    const auto body = ApiClient::buildRequestBody(p, m_aiStreamThinking->getIsToggled(), &error);
+    m_aiRequestPreview->setPlainText(error.isEmpty()
+        ? QString::fromUtf8(QJsonDocument(body).toJson(QJsonDocument::Indented)) : error);
 }
 
 void SettingsView::onFetchModels()
@@ -1642,21 +1793,19 @@ void SettingsView::onFetchModels()
         return;
     }
 
-    // L11 异步化：发起请求后立即返回，UI 不再阻塞（原同步嵌套事件循环最长 10s，
-    // 期间点保存/重置/关闭会重入产生怪癖）。结果通过回调在主线程回填；
-    // 回调先校验代次与可见性，丢弃过期/结果。
+    // 异步获取；回调校验请求代次，避免切换服务后旧结果覆盖新配置。
     m_fetchModelsBtn->setEnabled(false);
     m_fetchModelsBtn->setText("获取中…");
     const int gen = ++m_fetchGen;
 
     if (!m_aiClient) m_aiClient = std::make_unique<ApiClient>();
     m_aiClient->listModelsAsync(apiKey, apiBase, 10,
-        [this, gen](const ApiClient::ModelsResult& result) {
+        [this, gen, apiBase](const ApiClient::ModelsResult& result) {
             m_fetchModelsBtn->setEnabled(true);
-            m_fetchModelsBtn->setText("获取模型列表");
+            m_fetchModelsBtn->setText("获取模型与能力");
 
             // 过期结果丢弃：期间用户已恢复默认/再次发起获取
-            if (gen != m_fetchGen) {
+            if (gen != m_fetchGen || apiBase != m_aiApiBaseEdit->text().trimmed()) {
                 SNAP_LOG_DEBUG("SettingsView: 丢弃过期的模型列表结果（代次不匹配）");
                 return;
             }
@@ -1667,18 +1816,26 @@ void SettingsView::onFetchModels()
             }
 
             if (result.errorCode == 0 && !result.modelIds.isEmpty()) {
+                m_aiMetadata[providerEndpoint(apiBase, "models").toString()] = QJsonObject{
+                    {"models", result.metadata},
+                    {"fetched_at", QDateTime::currentDateTimeUtc().toString(Qt::ISODate)}};
+                m_aiRequestPreview->clear();
+
+                const QSignalBlocker blocker(m_aiModelCombo);
                 const QString selected = m_aiModelCombo->currentText();
                 m_aiModelCombo->clear();
                 m_aiModelCombo->addItems(result.modelIds);
                 if (!selected.isEmpty()) m_aiModelCombo->setCurrentText(selected);
+                switchAiProfile();
             } else if (result.errorCode == -2) {
-                m_aiErrorLabel->setText("请求超时，请稍后重试");
+                m_aiErrorLabel->setText("请求超时。继续使用已有缓存；没有缓存时使用通用候选，已选参数保持不变。");
                 m_aiErrorRow->setVisible(true);
             } else {
                 QString hint = result.errorMsg.contains("鉴权")
                                    ? "API Key 鉴权失败，请确认 Key 是否正确"
                                    : "获取模型列表失败，可手动输入模型名称";
-                m_aiErrorLabel->setText(hint + "\n" + result.errorMsg);
+                m_aiErrorLabel->setText(hint + "\n" + result.errorMsg
+                    + "\n继续使用已有缓存；没有缓存时使用通用候选，已选参数保持不变。");
                 m_aiErrorRow->setVisible(true);
             }
         });
@@ -1710,6 +1867,21 @@ bool SettingsView::saveToSettings()
     if (!aiBase.isEmpty() && providerEndpoint(aiBase, QStringLiteral("models")).isEmpty()) {
         if (m_notifyManager) m_notifyManager->warn("AI 服务", "接口根地址无效，请填写 http:// 或 https:// 地址。", this);
         m_aiApiBaseEdit->setFocus();
+        return false;
+    }
+
+    switchAiProfile();
+    const auto aiProfile = captureAiProfile();
+    auto validationParams = previewParams(aiProfile);
+    validationParams.provider = m_aiProviderCombo->currentData().toString();
+    QString parameterError;
+    ApiClient::buildRequestBody(validationParams, true, &parameterError);
+    bool validSeed = false;
+    m_aiSeedEdit->text().trimmed().toInt(&validSeed);
+    if (m_aiParameterChecks.value("seed")->isChecked() && !validSeed)
+        parameterError = "随机种子必须为整数";
+    if (!parameterError.isEmpty()) {
+        if (m_notifyManager) m_notifyManager->warn("AI 参数", parameterError, this);
         return false;
     }
 
@@ -1774,28 +1946,27 @@ bool SettingsView::saveToSettings()
     m_settings->ai_model = m_aiModelCombo->currentText().trimmed();
     m_settings->ai_custom_models = m_aiCustomModelsEdit->text().trimmed();
     m_settings->ai_timeout = m_aiTimeout->value();
+    m_settings->ai_response_idle_timeout = m_aiResponseIdleTimeout->value();
     m_settings->ai_temperature = m_aiTemperature->value() / 100.0;
     m_settings->ai_max_tokens = m_aiMaxTokens->value();
     m_settings->ai_top_p = m_aiTopP->value() / 100.0;
     m_settings->ai_frequency_penalty = m_aiFrequencyPenalty->value() / 100.0;
     m_settings->ai_presence_penalty = m_aiPresencePenalty->value() / 100.0;
-    // 随机种子输入验证：非法输入（非整数/空）提示并回退默认 0（0 = 不指定，随机）。
-    bool seedOk = false;
-    const int seedVal = m_aiSeedEdit->text().trimmed().toInt(&seedOk);
-    if (!seedOk) {
-        m_aiSeedEdit->setText("0");
-        if (m_notifyManager) {
-            m_notifyManager->warn("设置", "随机种子必须为整数，已重置为 0（默认随机）。", this);
-        }
-    }
-    m_settings->ai_seed = seedOk ? seedVal : 0;
+    m_settings->ai_seed = m_aiSeedEdit->text().trimmed().toInt();
     m_settings->ai_do_sample = m_aiDoSampleCombo->currentData().toString();
     m_settings->ai_thinking = m_aiThinkingCombo->currentData().toString();
-    m_settings->ai_reasoning_effort = m_aiEffortCombo->currentData().toString();
-    // 停止序列：按行拆分、去空、最多 4 项（各家上限不同，取最严）
+    m_settings->ai_reasoning_effort = m_aiEffortCombo->currentText().trimmed();
+    // 停止序列按行拆分、去空；不静默截断用户配置。
     m_settings->ai_stop = AiRequestOptions::joinStop(
         AiRequestOptions::parseStop(m_aiStopEdit->toPlainText()));
     m_settings->ai_stream_usage = m_aiStreamUsage->getIsToggled();
+    m_settings->ai_enabled_parameters = aiProfile.value("ai_enabled_parameters").toString();
+    m_settings->ai_extra_body = m_aiExtraBody->toPlainText();
+    m_settings->ai_thinking_format = m_aiThinkingFormat->currentData().toString();
+    m_settings->ai_max_tokens_field = m_aiOutputField->currentData().toString();
+    m_aiProfiles[m_aiProfileKey] = aiProfile;
+    m_settings->ai_model_profiles = QString::fromUtf8(QJsonDocument(m_aiProfiles).toJson(QJsonDocument::Compact));
+    m_settings->ai_model_metadata = QString::fromUtf8(QJsonDocument(m_aiMetadata).toJson(QJsonDocument::Compact));
 
     m_settings->ai_target_lang = m_aiTargetLangCombo->currentText();
     m_settings->ai_confirm_before_translate = m_aiConfirmBefore->getIsToggled();
@@ -1901,6 +2072,7 @@ void SettingsView::loadFromSettings()
     m_ocrTessdataEdit->setText(s.ocr_tessdata_dir);
     if (s.ocr_tessdata_dir.isEmpty()) m_ocrTessdataEdit->setPlaceholderText("留空则自动检测");
 
+    m_loadingAiProfile = true;
     // AI 服务：先静默恢复服务商，再显式回填地址/Key，
     // 避免 onProviderChanged 用服务商默认值覆盖已保存的自定义配置。
     {
@@ -1929,6 +2101,7 @@ void SettingsView::loadFromSettings()
     }
     m_aiModelCombo->setCurrentText(s.ai_model);
     m_aiTimeout->setValue(s.ai_timeout);
+    m_aiResponseIdleTimeout->setValue(s.ai_response_idle_timeout);
     m_aiTemperature->setValue(static_cast<int>(s.ai_temperature * 100));
     m_aiMaxTokens->setValue(s.ai_max_tokens);
     m_aiTopP->setValue(static_cast<int>(s.ai_top_p * 100));
@@ -1946,8 +2119,12 @@ void SettingsView::loadFromSettings()
     m_aiStopEdit->setPlainText(s.ai_stop);
     setToggle(m_aiStreamUsage, s.ai_stream_usage);
     m_aiErrorRow->setVisible(false);
-    // 服务商决定参数可用范围，回填后按当前服务商刷新一次
-    refreshAiPage();
+    m_aiProfiles = QJsonDocument::fromJson(s.ai_model_profiles.toUtf8()).object();
+    m_aiMetadata = QJsonDocument::fromJson(s.ai_model_metadata.toUtf8()).object();
+    m_aiProfileKey.clear();
+    applyAiProfile(s.toDict());
+    m_loadingAiProfile = false;
+    switchAiProfile();
 
     // 翻译
     const int tli = m_aiTargetLangCombo->findText(s.ai_target_lang);
@@ -2123,7 +2300,7 @@ void SettingsView::buildResetTable() {
         {"ai_settings", [this](const Settings& d){ m_aiApiBaseEdit->setText(d.ai_api_base); }},
         {"ai_settings", [this](const Settings&){ m_aiModelCombo->clearEditText(); }},
         {"ai_settings", [this](const Settings&){ m_aiCustomModelsEdit->clear(); }},
-        {"ai_settings", [this](const Settings& d){ m_aiTimeout->setValue(d.ai_timeout); }},
+        {"ai_settings", [this](const Settings& d){ m_aiTimeout->setValue(d.ai_timeout); m_aiResponseIdleTimeout->setValue(d.ai_response_idle_timeout); }},
         {"ai_settings", [this](const Settings& d){ m_aiTemperature->setValue(static_cast<int>(d.ai_temperature * 100)); }},
         {"ai_settings", [this](const Settings& d){ m_aiMaxTokens->setValue(d.ai_max_tokens); }},
         {"ai_settings", [this](const Settings& d){ m_aiTopP->setValue(static_cast<int>(d.ai_top_p * 100)); }},
@@ -2141,7 +2318,11 @@ void SettingsView::buildResetTable() {
         {"ai_settings", [this](const Settings& d){ m_aiStopEdit->setPlainText(d.ai_stop); }},
         {"ai_settings", [this](const Settings& d){ setToggle(m_aiStreamUsage, d.ai_stream_usage); }},
         {"ai_settings", [this](const Settings&){ m_aiErrorRow->setVisible(false); }},
-        {"ai_settings", [this](const Settings&){ refreshAiPage(); }},
+        {"ai_settings", [this](const Settings&){
+            m_aiProfiles = {}; m_aiMetadata = {};
+            applyAiProfile({});
+            refreshAiPage();
+        }},
 
         // ---- 翻译 ----
         {"translate", [this](const Settings& d){

@@ -14,6 +14,7 @@ class QPlainTextEdit;
 class QSplitter;
 class QStackedWidget;
 class Settings;
+class AiModelSelector;
 class NotifyManager;
 class TranslateService;
 class ZoomableView;
@@ -52,6 +53,7 @@ private:
     void buildUi();
     void launchService();
 
+    AiModelSelector* m_aiSelector = nullptr;
     QPixmap         m_pixmap;
     Settings*       m_settings;
     bool            m_autoTranslate;

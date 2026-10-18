@@ -20,6 +20,8 @@ include(cmake/SnapLensLogging.cmake)
 file(GLOB_RECURSE SNAPLENS_SOURCES CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/src/*.cpp" "${PROJECT_SOURCE_DIR}/src/*.h")
 list(FILTER SNAPLENS_SOURCES EXCLUDE REGEX "/src/log/.*")
+list(FILTER SNAPLENS_SOURCES EXCLUDE REGEX "/src/translate/(ai_client|model_capabilities|reply_waiter)\\.(cpp|h)$")
+add_subdirectory(src/translate)
 qt_add_executable(SnapLens
     ${SNAPLENS_SOURCES}
     "${PROJECT_SOURCE_DIR}/resources/resources.qrc"
@@ -30,7 +32,7 @@ qt_add_executable(SnapLens
 include(cmake/SnapLensTarget.cmake)
 include(cmake/SnapLensOcr.cmake)
 snaplens_configure_target(SnapLens)
-target_link_libraries(SnapLens PRIVATE SnapLensLogging)
+target_link_libraries(SnapLens PRIVATE SnapLensLogging SnapLens::Ai)
 snaplens_link_qt(SnapLens)
 snaplens_link_ocr(SnapLens)
 

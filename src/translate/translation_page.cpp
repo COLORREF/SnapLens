@@ -1,5 +1,6 @@
 #include "translation_page.h"
 #include "translator.h"
+#include "ai_model_selector.h"
 #include "translation_task.h"
 #include "providers.h"
 #include "../settings.h"
@@ -212,6 +213,8 @@ QWidget* TranslationPage::buildTranslatePage()
     command->addWidget(m_targetLangCombo);
 
     command->addStretch();
+    m_aiSelector = new AiModelSelector(m_settings, commandCard);
+    commandRoot->addWidget(m_aiSelector);
     auto* actions = new QHBoxLayout();
     actions->setSpacing(10);
     actions->addStretch();
@@ -323,6 +326,14 @@ void TranslationPage::refreshPromptPreview()
 
 void TranslationPage::onTranslate()
 {
+    if (isBusy()) {
+        releaseTranslationTask(m_service, this);
+        m_translateBtn->setText("重新翻译");
+        m_translateBtn->setEnabled(true);
+        m_statusLabel->setText("已停止翻译");
+        return;
+    }
+    const auto ai = m_aiSelector->snapshot();
     QString sourceText = m_sourceEdit->toPlainText().trimmed();
     if (sourceText.isEmpty()) {
         m_statusLabel->setText("请输入需要翻译的文本");
@@ -333,10 +344,10 @@ void TranslationPage::onTranslate()
         return;
     }
 
-    if (!m_settings || (providerNeedsApiKey(m_settings->ai_provider)
-                        && m_settings->ai_api_key.trimmed().isEmpty())
-                    || m_settings->ai_api_base.trimmed().isEmpty()
-                    || m_settings->ai_model.trimmed().isEmpty()) {
+    if (!m_settings || (providerNeedsApiKey(ai.provider)
+                        && ai.apiKey.trimmed().isEmpty())
+                    || ai.apiBase.trimmed().isEmpty()
+                    || ai.model.trimmed().isEmpty()) {
         emit settingsRequested("ai");
         m_statusLabel->setText("需要配置 AI 服务");
         // 提示属于整个主窗口，切换到设置页后仍需保持可见。
@@ -351,8 +362,8 @@ void TranslationPage::onTranslate()
     m_targetEdit->clear();
     m_thinkEdit->clear();
     m_copyBtn->setEnabled(false);
-    m_translateBtn->setEnabled(false);
-    m_translateBtn->setText("翻译中…");
+    m_translateBtn->setEnabled(true);
+    m_translateBtn->setText("停止翻译");
     m_statusLabel->setText("正在连接 AI 服务…");
 
     // Use prompt from prompt tab (user may have edited it)
@@ -364,7 +375,7 @@ void TranslationPage::onTranslate()
         m_scenarioCombo->currentText(),
         m_settings->text_translation_prompt,
         fullPrompt,
-        AiRequestOptions::fromSettings(*m_settings));
+        ai);
 
     connect(m_service, &TextTranslateService::translated, this, &TranslationPage::onTranslated);
     connect(m_service, &TextTranslateService::thinking, this, &TranslationPage::onThinking);
@@ -392,7 +403,7 @@ void TranslationPage::onThinking(const QString& text)
     // disconnect 不能撤销已排队的信号，丢弃旧任务的回写。
     if (!m_service || sender() != m_service.data()) return;
     m_thinkEdit->setPlainText(text);
-    if (!text.isEmpty()) m_statusLabel->setText("正在生成译文…");
+    if (!text.isEmpty()) m_statusLabel->setText("AI 正在思考…");
 }
 
 void TranslationPage::onError(const QString& msg)

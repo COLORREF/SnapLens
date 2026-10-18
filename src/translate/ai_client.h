@@ -37,33 +37,40 @@ public:
         int errorCode = 0;
         QString errorMsg;
         QStringList modelIds;
+        QJsonObject metadata; // 原始模型元数据，按模型 ID 索引；缺失字段保持未知。
     };
 
     explicit ApiClient(QObject* parent = nullptr);
     ~ApiClient() override;
 
     /** @brief 一次聊天补全请求的全部输入。
-     * @details provider 决定哪些采样/思考字段会被真正发送：各服务商对
-     * OpenAI 兼容字段的支持差异很大，不支持的字段一律不发送（见 providers.h）。
+     * @details provider 仅提供字段形式预设；可选字段是否发送由用户决定。
+     * 参数和高级 JSON 按端点/模型保存；未知能力不做静默裁剪。
      */
     struct ChatParams {
         QString apiKey;
         QString apiBase;
         QString model;
-        QString provider;              // 服务商 ID，用于能力裁剪
+        QString provider;              // 服务商 ID，仅提供字段形式预设
         QJsonArray messages;
-        int timeoutSecs = 30;
+        int timeoutSecs = 30; // 连接与发送阶段；不是生成总时限
+        int responseIdleTimeoutSecs = 0; // 连续未收到响应数据的时限，0 不限
         double temperature = 0.1;
         int maxTokens = 4096;
         double topP = 1.0;
         double frequencyPenalty = 0.0;
         double presencePenalty = 0.0;
-        int seed = 0;                  // 0 = 不指定
+        int seed = 0;                  // 可显式指定 0
+        QString enabledParameters;    // 逗号分隔；只有显式启用的数值参数才发送
+        QJsonObject modelMetadata;    // 当前端点/模型的缓存声明，仅用于自动字段建议
+        QString extraBody;            // 当前端点/模型的高级 JSON 覆盖
+        QString thinkingFormat = QStringLiteral("auto");
+        QString maxTokensField = QStringLiteral("auto");
         QString doSample;              // auto/on/off（仅 GLM 等支持）
         QString thinking;              // auto/on/off
         QString reasoningEffort;       // auto = 不发送
         QStringList stop;              // 停止序列
-        bool streamUsage = true;       // stream_options.include_usage
+        bool streamUsage = false;      // 显式启用 stream_options.include_usage
         std::atomic<int>* cancelFlag = nullptr;
     };
 
@@ -88,12 +95,13 @@ public:
                          int timeoutSecs,
                          std::function<void(const ModelsResult&)> callback);
 
+    /// 预览和发送共用同一构建器；错误时返回空对象，绝不静默改写用户参数。
+    static QJsonObject buildRequestBody(const ChatParams& params, bool stream, QString* error = nullptr);
+    static ModelsResult parseModels(const QJsonObject& response);
+
 private:
-    /// 按 provider 能力构建请求体；stream=true 时附加 stream_options。
-    QJsonObject buildRequestBody(const ChatParams& params, bool stream);
     void setupRequest(QNetworkRequest& req, const QString& apiKey, int timeoutSecs);
     QString parseErrorBody(const QByteArray& body);
-    int runEventLoop(QNetworkReply* reply, int timeoutSecs, std::atomic<int>* cancelFlag = nullptr);
 
     QNetworkAccessManager* m_nam;
 };
